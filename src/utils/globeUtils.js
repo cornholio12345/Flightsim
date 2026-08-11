@@ -4,7 +4,8 @@ import countries50m from 'world-atlas/countries-50m.json'
 import { subsolarPoint } from './passengerUtils'
 
 const RADIUS = 2
-const MIN_CAMERA_Z = 2.55
+const ROUTE_RADIUS = RADIUS + 0.036
+const MIN_CAMERA_Z = 2.22
 const MAX_CAMERA_Z = 8.5
 const DEFAULT_CAMERA_Z = 5.8
 const AIRCRAFT_MIN_SCALE = 0.045
@@ -17,7 +18,8 @@ const FEATURED_COUNTRIES = new Set([
   'Egypt', 'Sudan', 'Saudi Arabia', 'Jordan', 'Israel', 'Turkey', 'Greece', 'Cyprus',
   'Bulgaria', 'Romania', 'Hungary', 'Austria', 'Czechia', 'Czech Republic', 'Poland',
   'Germany', 'Italy', 'France', 'Spain', 'United Kingdom', 'Ukraine', 'Russia',
-  'United States of America', 'Canada', 'Ireland', 'Iceland', 'Portugal'
+  'United States of America', 'Canada', 'Ireland', 'Iceland', 'Portugal', 'Slovenia',
+  'Croatia', 'Bosnia and Herz.', 'Serbia', 'Montenegro', 'Kosovo', 'North Macedonia', 'Albania'
 ])
 
 const CITY_LABELS = [
@@ -27,6 +29,11 @@ const CITY_LABELS = [
   ['Prague', 50.0755, 14.4378], ['Warsaw', 52.2297, 21.0122], ['Budapest', 47.4979, 19.0402],
   ['Bucharest', 44.4268, 26.1025], ['Sofia', 42.6977, 23.3219], ['Athens', 37.9838, 23.7275],
   ['Istanbul', 41.0082, 28.9784], ['Kyiv', 50.4501, 30.5234], ['Moscow', 55.7558, 37.6173],
+  ['Ljubljana', 46.0569, 14.5058], ['Zagreb', 45.815, 15.9819], ['Split', 43.5081, 16.4402],
+  ['Dubrovnik', 42.6507, 18.0944], ['Sarajevo', 43.8563, 18.4131], ['Belgrade', 44.7866, 20.4489],
+  ['Novi Sad', 45.2671, 19.8335], ['Podgorica', 42.4304, 19.2594], ['Pristina', 42.6629, 21.1655],
+  ['Skopje', 41.9981, 21.4254], ['Tirana', 41.3275, 19.8187], ['Thessaloniki', 40.6401, 22.9444],
+  ['Varna', 43.2141, 27.9147], ['Cluj-Napoca', 46.7712, 23.6236], ['Timisoara', 45.7489, 21.2087],
   ['Cairo', 30.0444, 31.2357], ['Alexandria', 31.2001, 29.9187], ['Hurghada', 27.2579, 33.8116],
   ['Riyadh', 24.7136, 46.6753], ['Jeddah', 21.4858, 39.1925], ['Dubai', 25.2048, 55.2708],
   ['Tel Aviv', 32.0853, 34.7818], ['New York', 40.7128, -74.006], ['Boston', 42.3601, -71.0589],
@@ -105,7 +112,7 @@ const latLonVector = (lat, lon, radius = RADIUS) => {
   )
 }
 
-const greatCirclePoint = (a, b, t, radius = RADIUS + 0.026) => {
+const greatCirclePoint = (a, b, t, radius = ROUTE_RADIUS) => {
   const va = latLonVector(a.lat, a.lon, 1).normalize()
   const vb = latLonVector(b.lat, b.lon, 1).normalize()
   const dot = THREE.MathUtils.clamp(va.dot(vb), -1, 1)
@@ -124,7 +131,7 @@ const angularDistance = (a, b) => {
   return Math.acos(THREE.MathUtils.clamp(va.dot(vb), -1, 1))
 }
 
-const routeSamplesForNodes = (nodes, radius = RADIUS + 0.026) => {
+const routeSamplesForNodes = (nodes, radius = ROUTE_RADIUS) => {
   if (!nodes || nodes.length < 2) return []
   const segmentLengths = []
   let total = 0
@@ -157,7 +164,7 @@ const routeSamplesForNodes = (nodes, radius = RADIUS + 0.026) => {
   return samples
 }
 
-const routePointsForNodes = (nodes, radius = RADIUS + 0.026) => routeSamplesForNodes(nodes, radius).map(sample => sample.point)
+const routePointsForNodes = (nodes, radius = ROUTE_RADIUS) => routeSamplesForNodes(nodes, radius).map(sample => sample.point)
 
 const destinationPoint = (lat, lon, bearing, angularDistanceValue = 0.012) => {
   const phi1 = THREE.MathUtils.degToRad(Number(lat))
@@ -426,7 +433,7 @@ const createMapLabels = () => {
   SEA_LABELS.forEach(([text, lat, lon]) => addMapLabel({ text, lat, lon, kind: 'sea', maxCameraZ: 4.25, width: 0.92, height: 0.17 }))
   CITY_LABELS.forEach(([text, lat, lon]) => {
     const width = Math.min(0.9, Math.max(0.46, 0.34 + String(text).length * 0.028))
-    addMapLabel({ text, lat, lon, kind: 'city', maxCameraZ: 3.35, width, height: 0.14 })
+    addMapLabel({ text, lat, lon, kind: 'city', maxCameraZ: 3.55, width, height: 0.14 })
   })
 }
 
@@ -471,7 +478,7 @@ const updateMapLabels = () => {
     label.visible = facing
     if (!facing) return
     const distance = camera.position.distanceTo(worldPosition)
-    const scaleFactor = THREE.MathUtils.clamp(distance / 3.4, 0.28, 1.05)
+    const scaleFactor = THREE.MathUtils.clamp(distance / 3.4, 0.2, 1.05)
     label.scale.set(label.userData.baseWidth * scaleFactor, label.userData.baseHeight * scaleFactor, 1)
     if (label.userData.kind === 'city') {
       const daylight = label.userData.normal.dot(sunDirectionLocal)
@@ -498,7 +505,7 @@ const updateCityLights = timestamp => {
     if (!light.visible) return
     const twinkle = 0.78 + 0.22 * Math.pow(Math.sin(timestamp * 0.004 + light.userData.phase), 2)
     const distance = camera.position.distanceTo(worldPosition)
-    const zoomScale = THREE.MathUtils.clamp(distance / 3.5, 0.38, 1)
+    const zoomScale = THREE.MathUtils.clamp(distance / 3.5, 0.3, 1)
     const scale = light.userData.baseScale * zoomScale * (0.94 + 0.08 * twinkle)
     light.scale.set(scale, scale, 1)
     light.material.opacity = night * twinkle * 0.95
@@ -605,12 +612,12 @@ const createRouteMarker = (node, label, accentHex, accentCss) => {
     new THREE.SphereGeometry(0.034, 14, 14),
     new THREE.MeshBasicMaterial({ color: accentHex, transparent: true, opacity: 0.72 })
   )
-  pin.position.copy(normal.clone().multiplyScalar(RADIUS + 0.035))
+  pin.position.copy(normal.clone().multiplyScalar(ROUTE_RADIUS))
   group.add(pin)
   const tag = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: buildTagTexture(label, accentCss), transparent: true, opacity: 0.8, depthTest: false, depthWrite: false
+    map: buildTagTexture(label, accentCss), transparent: true, opacity: 0.72, depthTest: false, depthWrite: false
   }))
-  tag.position.copy(normal.clone().multiplyScalar(RADIUS + 0.09))
+  tag.position.copy(normal.clone().multiplyScalar(RADIUS + 0.065))
   tag.scale.set(0.57, 0.21, 1)
   tag.renderOrder = 15
   group.userData.pin = pin
@@ -630,10 +637,10 @@ const updateRouteMarkerScale = () => {
     if (!tag) return
     tag.getWorldPosition(worldPosition)
     const distance = camera.position.distanceTo(worldPosition)
-    const factor = THREE.MathUtils.clamp(distance / 4.0, 0.18, 0.88)
+    const factor = THREE.MathUtils.clamp(distance / 4.0, 0.12, 0.82)
     tag.scale.set(marker.userData.baseTagWidth * factor, marker.userData.baseTagHeight * factor, 1)
     if (pin) {
-      const pinScale = THREE.MathUtils.clamp(factor * 1.3, 0.36, 1)
+      const pinScale = THREE.MathUtils.clamp(factor * 1.3, 0.28, 1)
       pin.scale.setScalar(pinScale)
     }
   })
@@ -642,8 +649,8 @@ const updateRouteMarkerScale = () => {
 const updateAircraftScreenRotation = () => {
   if (!aircraft?.visible || !aircraftState || !earthGroup || !camera) return
   const ahead = destinationPoint(aircraftState.lat, aircraftState.lon, aircraftState.bearing)
-  const from = latLonVector(aircraftState.lat, aircraftState.lon, RADIUS + aircraftState.visualAltitude)
-  const to = latLonVector(ahead.lat, ahead.lon, RADIUS + aircraftState.visualAltitude)
+  const from = latLonVector(aircraftState.lat, aircraftState.lon, ROUTE_RADIUS)
+  const to = latLonVector(ahead.lat, ahead.lon, ROUTE_RADIUS)
   earthGroup.localToWorld(from)
   earthGroup.localToWorld(to)
   from.project(camera)
@@ -655,7 +662,7 @@ const updateRouteDashScale = () => {
   if (!routeLine || !camera) return
   const flown = routeLine.children.find(child => child.userData.role === 'flown')
   if (flown?.material?.isLineDashedMaterial) {
-    flown.material.scale = THREE.MathUtils.clamp(5.0 / Math.max(camera.position.z, 0.5), 0.7, 2.2)
+    flown.material.scale = THREE.MathUtils.clamp(5.0 / Math.max(camera.position.z, 0.5), 0.7, 2.5)
   }
 }
 
@@ -841,7 +848,7 @@ export const setRouteAlternatives = (plans, selectedId = null) => {
   viable.forEach((plan, index) => {
     const baseColor = palette[index % palette.length]
     const line = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(routePointsForNodes(plan.previewNodes, RADIUS + 0.019 + index * 0.001)),
+      new THREE.BufferGeometry().setFromPoints(routePointsForNodes(plan.previewNodes, RADIUS + 0.02 + index * 0.001)),
       new THREE.LineBasicMaterial({ color: baseColor, transparent: true, opacity: 0.42 })
     )
     line.userData.planId = String(plan.id)
@@ -921,9 +928,9 @@ export const updateRouteProgress = progress => {
   const upper = routeSamples[upperIndex]
   const span = Math.max(1e-9, upper.progress - lower.progress)
   const local = THREE.MathUtils.clamp((p - lower.progress) / span, 0, 1)
-  const interpolated = lower.point.clone().lerp(upper.point, local).normalize().multiplyScalar(RADIUS + 0.026)
+  const interpolated = lower.point.clone().lerp(upper.point, local).normalize().multiplyScalar(ROUTE_RADIUS)
   const currentPoint = aircraftState
-    ? latLonVector(aircraftState.lat, aircraftState.lon, RADIUS + 0.028)
+    ? latLonVector(aircraftState.lat, aircraftState.lon, ROUTE_RADIUS)
     : interpolated
 
   const flown = routeLine.children.find(child => child.userData.role === 'flown')
@@ -946,9 +953,11 @@ export const updateRouteProgress = progress => {
 
 export const updateAircraftPosition = (lat, lon, altitudeFt = 0, bearing = 0) => {
   if (!aircraft) return
-  const visualAltitude = Math.min(0.11, Math.max(0.045, Number(altitudeFt || 0) / 360000))
-  aircraft.position.copy(latLonVector(lat, lon, RADIUS + visualAltitude))
-  aircraftState = { lat: Number(lat), lon: Number(lon), bearing: Number(bearing || 0), visualAltitude }
+  // This globe is a map, not a 3D altitude plot. Keeping the aircraft on the same
+  // radius as the route prevents perspective parallax from making it look off-track.
+  const visualAltitude = ROUTE_RADIUS - RADIUS
+  aircraft.position.copy(latLonVector(lat, lon, ROUTE_RADIUS))
+  aircraftState = { lat: Number(lat), lon: Number(lon), bearing: Number(bearing || 0), visualAltitude, altitudeFt: Number(altitudeFt || 0) }
   aircraft.visible = true
   if (followAircraft) centerCoordinate(lat, lon)
 }
