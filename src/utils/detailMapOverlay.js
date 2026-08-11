@@ -92,7 +92,7 @@ export const mountDetailMapOverlay = store => {
   const startDetailMap = () => {
     if (mode !== 'detail') return
     if (!detailInitialized) {
-      setStatus('Loading detail map…')
+      setStatus('Loading map tiles…')
       const detailMap = initializeDetailMap('detail-map-canvas', {
         onReady: () => {
           detailReady = true
@@ -102,11 +102,17 @@ export const mountDetailMapOverlay = store => {
         },
         onError: error => {
           console.warn('Detail map error', error)
-          if (!detailReady) setStatus(navigator.onLine ? 'Detail map tiles could not load · retry' : 'Detail map needs an internet connection')
+          detailReady = false
+          detailInitialized = false
+          destroyDetailMap()
+          const reason = navigator.onLine
+            ? (error?.message || 'Map tile request failed')
+            : 'No internet connection'
+          setStatus(`${reason} · tap Detail map to retry`)
         }
       })
       detailInitialized = Boolean(detailMap)
-      if (!detailMap) setStatus('Detail map could not start · retry')
+      if (!detailMap) setStatus('Detail map could not start · tap to retry')
     }
     syncTrip()
     resizeDetailMap()
@@ -147,7 +153,7 @@ export const mountDetailMapOverlay = store => {
   window.addEventListener('resize', handleResize)
 
   syncTimer = window.setInterval(() => {
-    if (mode === 'detail') syncTrip()
+    if (mode === 'detail' && detailReady) syncTrip()
   }, 1000)
 
   return () => {
@@ -157,6 +163,6 @@ export const mountDetailMapOverlay = store => {
     panel.classList.remove('detail-map-active')
     try { switcher.remove() } catch (_) { /* no-op */ }
     try { detailContainer.remove() } catch (_) { /* no-op */ }
-    if (detailInitialized) destroyDetailMap()
+    if (detailInitialized || detailReady) destroyDetailMap()
   }
 }
