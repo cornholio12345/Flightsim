@@ -2,6 +2,11 @@ const EARTH_RADIUS_NM = 3440.065
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 const toRad = value => value * Math.PI / 180
 const toDeg = value => value * 180 / Math.PI
+const smoothStep = value => {
+  const t = clamp(value, 0, 1)
+  return t * t * (3 - 2 * t)
+}
+const easeOutCubic = value => 1 - Math.pow(1 - clamp(value, 0, 1), 3)
 
 export const calculateDistanceNm = (lat1, lon1, lat2, lon2) => {
   const phi1 = toRad(lat1)
@@ -46,7 +51,12 @@ const interpolateGreatCircle = (start, end, fraction) => {
 export const prepareRoute = rawNodes => {
   const nodes = (rawNodes || [])
     .filter(node => Number.isFinite(Number(node?.lat)) && Number.isFinite(Number(node?.lon)))
-    .map(node => ({ ...node, lat: Number(node.lat), lon: Number(node.lon) }))
+    .map(node => ({
+      ...node,
+      lat: Number(node.lat),
+      lon: Number(node.lon),
+      altitudeFt: Number(node.altitudeFt ?? node.alt ?? 0)
+    }))
 
   if (nodes.length < 2) throw new Error('A route needs at least two valid points.')
 
@@ -62,21 +72,36 @@ export const prepareRoute = rawNodes => {
   return { nodes: prepared, totalNm: cumulativeNm }
 }
 
+const segmentAtDistance = (route, targetNm) => {
+  const nodes = route.nodes
+  let endIndex = nodes.findIndex(node => node.distanceFromStartNm >= targetNm)
+  if (endIndex <= 0) endIndex = 1
+  const start = nodes[endIndex - 1]
+  const end = nodes[endIndex]
+  const segmentNm = Math.max(0.0001, end.distanceFromStartNm - start.distanceFromStartNm)
+  const segmentProgress = clamp((targetNm - start.distanceFromStartNm) / segmentNm, 0, 1)
+  return { start, end, segmentProgress, endIndex }
+}
+
 export const positionAtProgress = (preparedRoute, progress) => {
   const route = preparedRoute?.nodes ? preparedRoute : prepareRoute(preparedRoute)
   const p = clamp(Number(progress || 0), 0, 1)
   const targetNm = route.totalNm * p
   const nodes = route.nodes
 
-  if (p <= 0) return { ...nodes[0], progress: 0 }
-  if (p >= 1) return { ...nodes[nodes.length - 1], progress: 1 }
+  if (p <= 0) {
+    const next = nodes[1]
+    return {
+      ...nodes[0],
+      progress: 0,
+      nextIdent: next?.ident || null,
+      distanceFromStartNm: 0,
+      bearing: next ? calculateBearing(nodes[0].lat, nodes[0].lon, next.lat, next.lon) : 0
+    }
+  }
+  if (p >= 1) return { ...nodes[nodes.length - 1], progress: 1, nextIdent: null, bearing: 0 }
 
-  let endIndex = nodes.findIndex(node => node.distanceFromStartNm >= targetNm)
-  if (endIndex <= 0) endIndex = 1
-  const start = nodes[endIndex - 1]
-  const end = nodes[endIndex]
-  const segmentNm = Math.max(0.0001, end.distanceFromStartNm - start.distanceFromStartNm)
-  const segmentProgress = (targetNm - start.distanceFromStartNm) / segmentNm
+  const { start, end, segmentProgress } = segmentAtDistance(route, targetNm)
   const point = interpolateGreatCircle(start, end, segmentProgress)
 
   return {
@@ -89,44 +114,110 @@ export const positionAtProgress = (preparedRoute, progress) => {
   }
 }
 
-export const getFlightState = ({ route, progress, cruiseAltitudeFt = 36000, cruiseSpeedKt = 465 }) => {
+const plannedAltitudeAtProgress = (route, progress) => {
+  const targetNm = route.totalNm * clamp(progress, 0, 1)
+  const { start, end, segmentProgress } = segmentAtDistance(route, targetNm)
+  const startAlt = Number(start.altitudeFt || 0)
+  const endAlt = Number(end.altitudeFt || 0)
+  if (startAlt <= 0 && endAlt <= 0) return null
+  if (startAlt > 0 && endAlt > 0) return startAlt + (endAlt - startAlt) * segmentProgress
+  return startAlt > 0 ? startAlt : endAlt
+}
+
+const inferredCruiseAltitude = (route, fallback) => {
+  const planned = route.nodes
+    .map(node => Number(node.altitudeFt || 0))
+    .filter(value => value >= 10000 && value <= 50000)
+    .sort((a, b) => a - b)
+  if (!planned.length) return fallback
+  return planned[Math.floor(planned.length / 2)]
+}
+
+const nextWaypointInfo = (route, position, speedKt) => {
+  const currentNm = Number(position.distanceFromStartNm || 0)
+  const next = route.nodes.find((node, index) => index > 0 && node.distanceFromStartNm > currentNm + 0.05)
+  if (!next) return { nextIdent: null, distanceToNextNm: 0, minutesToNext: 0 }
+  const distanceToNextNm = Math.max(0, next.distanceFromStartNm - currentNm)
+  const minutesToNext = speedKt > 40 ? (distanceToNextNm / speedKt) * 60 : null
+  return {
+    nextIdent: next.ident || next.name || null,
+    distanceToNextNm,
+    minutesToNext
+  }
+}
+
+export const getFlightState = ({
+  route,
+  progress,
+  elapsedMinutes = null,
+  blockMinutes = null,
+  cruiseAltitudeFt = 36000,
+  cruiseSpeedKt = 465
+}) => {
   const prepared = route?.nodes ? route : prepareRoute(route)
   const p = clamp(Number(progress || 0), 0, 1)
   const position = positionAtProgress(prepared, p)
-  const takeoffEnd = 0.01
-  const climbEnd = 0.12
-  const descentStart = 0.86
-  const cruiseAltitude = clamp(Number(cruiseAltitudeFt || 36000), 18000, 43000)
+  const totalMinutes = Math.max(20, Number(blockMinutes || 0) || 240)
+  const elapsed = Number.isFinite(Number(elapsedMinutes))
+    ? clamp(Number(elapsedMinutes), 0, totalMinutes)
+    : totalMinutes * p
+  const remainingMinutes = Math.max(0, totalMinutes - elapsed)
+
+  const requestedCruiseAltitude = clamp(Number(cruiseAltitudeFt || 36000), 18000, 43000)
+  const cruiseAltitude = clamp(inferredCruiseAltitude(prepared, requestedCruiseAltitude), 18000, 43000)
   const cruiseSpeed = clamp(Number(cruiseSpeedKt || 465), 250, 560)
+
+  const takeoffMinutes = Math.min(4, Math.max(2.5, totalMinutes * 0.012))
+  const climbMinutes = Math.min(24, Math.max(14, totalMinutes * 0.075))
+  const approachMinutes = Math.min(9, Math.max(6, totalMinutes * 0.025))
+  const descentMinutes = Math.min(30, Math.max(18, totalMinutes * 0.09))
 
   let phase = 'Cruise'
   let altitudeFt = cruiseAltitude
   let speedKt = cruiseSpeed
 
-  if (p < takeoffEnd) {
-    const f = p / takeoffEnd
+  if (elapsed < takeoffMinutes) {
+    const f = elapsed / takeoffMinutes
     phase = 'Takeoff'
-    altitudeFt = 1500 * Math.pow(f, 1.8)
-    speedKt = 170 * Math.min(1, f * 1.15)
-  } else if (p < climbEnd) {
-    const f = (p - takeoffEnd) / (climbEnd - takeoffEnd)
+    altitudeFt = 2500 * smoothStep(f)
+    speedKt = 185 * easeOutCubic(f)
+  } else if (elapsed < takeoffMinutes + climbMinutes) {
+    const f = (elapsed - takeoffMinutes) / climbMinutes
     phase = 'Climb'
-    altitudeFt = 1500 + (cruiseAltitude - 1500) * Math.sin((f * Math.PI) / 2)
-    speedKt = 170 + (cruiseSpeed - 170) * f
-  } else if (p > descentStart) {
-    const f = (p - descentStart) / (1 - descentStart)
-    phase = f > 0.9 ? 'Approach' : 'Descent'
-    altitudeFt = cruiseAltitude * Math.cos((f * Math.PI) / 2)
-    speedKt = cruiseSpeed - (cruiseSpeed - 150) * f
+    altitudeFt = 2500 + (cruiseAltitude - 2500) * Math.sin((clamp(f, 0, 1) * Math.PI) / 2)
+    speedKt = 185 + (cruiseSpeed - 185) * easeOutCubic(Math.min(1, f * 1.35))
+  } else if (remainingMinutes <= approachMinutes) {
+    const f = 1 - (remainingMinutes / approachMinutes)
+    phase = 'Approach'
+    altitudeFt = 3200 * Math.pow(1 - clamp(f, 0, 1), 1.2)
+    speedKt = 205 - 70 * smoothStep(f)
+  } else if (remainingMinutes <= descentMinutes + approachMinutes) {
+    const descentElapsed = descentMinutes + approachMinutes - remainingMinutes
+    const f = clamp(descentElapsed / descentMinutes, 0, 1)
+    phase = 'Descent'
+    altitudeFt = 3200 + (cruiseAltitude - 3200) * Math.cos((f * Math.PI) / 2)
+    speedKt = cruiseSpeed - (cruiseSpeed - 205) * smoothStep(f)
+  } else {
+    const plannedAltitude = plannedAltitudeAtProgress(prepared, p)
+    if (Number.isFinite(plannedAltitude) && plannedAltitude >= 10000) {
+      altitudeFt = clamp(plannedAltitude, 10000, 43000)
+    }
   }
+
+  speedKt = Math.max(0, speedKt)
+  altitudeFt = Math.max(0, altitudeFt)
+  const waypoint = nextWaypointInfo(prepared, position, speedKt)
 
   return {
     ...position,
+    ...waypoint,
     phase,
-    altitudeFt: Math.max(0, Math.round(altitudeFt / 100) * 100),
-    speedKt: Math.max(0, Math.round(speedKt)),
+    altitudeFt: Math.round(altitudeFt / 100) * 100,
+    speedKt: Math.round(speedKt),
     travelledNm: Math.round(prepared.totalNm * p),
-    remainingNm: Math.max(0, Math.round(prepared.totalNm * (1 - p)))
+    remainingNm: Math.max(0, Math.round(prepared.totalNm * (1 - p))),
+    elapsedMinutes,
+    remainingMinutes
   }
 }
 
