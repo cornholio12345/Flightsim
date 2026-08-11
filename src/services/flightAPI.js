@@ -115,6 +115,56 @@ const calculateBearing = (a, b) => {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
 }
 
+const distanceNmBetween = (a, b) => {
+  const radiusNm = 3440.065
+  const lat1 = Number(a.lat) * Math.PI / 180
+  const lat2 = Number(b.lat) * Math.PI / 180
+  const dLat = (Number(b.lat) - Number(a.lat)) * Math.PI / 180
+  const dLon = (Number(b.lon) - Number(a.lon)) * Math.PI / 180
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
+  return 2 * radiusNm * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)))
+}
+
+const routeShapeSamples = nodes => {
+  if (!nodes || nodes.length < 2) return []
+  return [0.12, 0.25, 0.38, 0.5, 0.62, 0.75, 0.88].map(fraction => {
+    const index = Math.min(nodes.length - 1, Math.max(0, Math.round((nodes.length - 1) * fraction)))
+    return nodes[index]
+  })
+}
+
+const routesEquivalent = (a, b) => {
+  if (a.fromICAO !== b.fromICAO || a.toICAO !== b.toICAO) return false
+
+  const distanceA = Number(a.distanceNm || 0)
+  const distanceB = Number(b.distanceNm || 0)
+  const distanceTolerance = Math.max(12, Math.min(distanceA, distanceB) * 0.012)
+  if (Math.abs(distanceA - distanceB) > distanceTolerance) return false
+
+  const samplesA = routeShapeSamples(a.routeNodesForRanking)
+  const samplesB = routeShapeSamples(b.routeNodesForRanking)
+  if (samplesA.length !== samplesB.length || !samplesA.length) return false
+
+  const separations = samplesA.map((point, index) => distanceNmBetween(point, samplesB[index]))
+  const average = separations.reduce((sum, value) => sum + value, 0) / separations.length
+  const maximum = Math.max(...separations)
+
+  // Same corridor with only tiny waypoint/database differences: show one result.
+  // A genuinely different airway/corridor stays visible even when endpoints match.
+  return average <= 18 && maximum <= 42
+}
+
+const dedupeEquivalentRoutes = (plans, limit = 6) => {
+  const kept = []
+  for (const plan of plans) {
+    if (kept.some(existing => routesEquivalent(plan, existing))) continue
+    kept.push(plan)
+    if (kept.length >= limit) break
+  }
+  return kept
+}
+
 const routeSamples = nodes => {
   if (!nodes || nodes.length < 2) return []
   const fractions = nodes.length < 5 ? [0, 0.5] : [0.18, 0.5, 0.82]
@@ -130,17 +180,44 @@ const routeSamples = nodes => {
 
 const viaSummary = nodes => {
   if (!nodes || nodes.length < 5) return ''
-  const candidates = [
-    nodes[Math.floor(nodes.length / 3)]?.ident,
-    nodes[Math.floor(nodes.length * 2 / 3)]?.ident
-  ].filter(Boolean)
-  return [...new Set(candidates)].join(' · ')
+  const indices = [0.22, 0.42, 0.62, 0.82]
+  const candidates = indices
+    .map(fraction => nodes[Math.min(nodes.length - 2, Math.max(1, Math.round((nodes.length - 1) * fraction)))]?.ident)
+    .filter(Boolean)
+  return [...new Set(candidates)].slice(0, 4).join(' · ')
+}
+
+const annotateRouteDifferences = plans => {
+  if (!plans.length) return plans
+  const best = plans[0]
+  return plans.map((plan, index) => {
+    if (index === 0) return { ...plan, differenceLabel: 'Best overall match' }
+
+    const parts = []
+    if (plan.viaSummary && plan.viaSummary !== best.viaSummary) {
+      parts.push(`Different routing via ${plan.viaSummary}`)
+    } else {
+      parts.push('Different route corridor')
+    }
+
+    const distanceDeltaKm = Math.round((Number(plan.distanceNm || 0) - Number(best.distanceNm || 0)) * 1.852)
+    if (Math.abs(distanceDeltaKm) >= 10) parts.push(`${distanceDeltaKm > 0 ? '+' : ''}${distanceDeltaKm} km`)
+
+    const wind = Number(plan.upperWindKmh)
+    const bestWind = Number(best.upperWindKmh)
+    if (Number.isFinite(wind) && Number.isFinite(bestWind)) {
+      const windDelta = Math.round(wind - bestWind)
+      if (Math.abs(windDelta) >= 10) parts.push(`${Math.abs(windDelta)} km/h ${windDelta > 0 ? 'better' : 'worse'} wind`)
+    }
+
+    return { ...plan, differenceLabel: parts.join(' · ') }
+  })
 }
 
 const enrichPlansWithUpperWinds = async plans => {
   if (!plans.length) return plans
 
-  const enriched = await Promise.all(plans.map(async plan => {
+  const enrichedCandidates = await Promise.all(plans.map(async plan => {
     try {
       const full = await requestJson(`/plan/${encodeURIComponent(plan.id)}`)
       const nodes = normalizeNodes(full)
@@ -150,12 +227,23 @@ const enrichPlansWithUpperWinds = async plans => {
     }
   }))
 
+  // Candidates are already ordered by base quality. Keep the best representative
+  // of each actual route corridor, not six database records describing the same path.
+  const enriched = dedupeEquivalentRoutes(enrichedCandidates, 6)
+
   const sampleEntries = []
   enriched.forEach((plan, planIndex) => {
     routeSamples(plan.routeNodesForRanking).forEach(sample => sampleEntries.push({ planIndex, ...sample }))
   })
 
-  if (!sampleEntries.length) return enriched.map(({ routeNodesForRanking, ...plan }) => plan)
+  if (!sampleEntries.length) {
+    const ranked = enriched.map(({ routeNodesForRanking, ...plan }, index) => ({
+      ...plan,
+      recommendationRank: index + 1,
+      weatherLabel: 'Upper-wind data unavailable'
+    }))
+    return annotateRouteDifferences(ranked)
+  }
 
   try {
     const params = new URLSearchParams({
@@ -181,8 +269,9 @@ const enrichPlansWithUpperWinds = async plans => {
       windByPlan[sample.planIndex].push(speed * Math.cos(angle))
     })
 
-    const minDistance = Math.min(...enriched.map(plan => Number(plan.distanceNm || 0)).filter(Number.isFinite))
-    return enriched
+    const finiteDistances = enriched.map(plan => Number(plan.distanceNm || 0)).filter(Number.isFinite)
+    const minDistance = finiteDistances.length ? Math.min(...finiteDistances) : 0
+    const ranked = enriched
       .map((plan, index) => {
         const values = windByPlan[index]
         const upperWindKmh = values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null
@@ -204,9 +293,16 @@ const enrichPlansWithUpperWinds = async plans => {
       })
       .sort((a, b) => Number(b.recommendationScore || b.baseScore || 0) - Number(a.recommendationScore || a.baseScore || 0))
       .map((plan, index) => ({ ...plan, recommendationRank: index + 1 }))
+
+    return annotateRouteDifferences(ranked)
   } catch (_) {
-    return enriched
-      .map(({ routeNodesForRanking, ...plan }, index) => ({ ...plan, recommendationRank: index + 1, weatherLabel: 'Upper-wind data unavailable' }))
+    const ranked = enriched
+      .map(({ routeNodesForRanking, ...plan }, index) => ({
+        ...plan,
+        recommendationRank: index + 1,
+        weatherLabel: 'Upper-wind data unavailable'
+      }))
+    return annotateRouteDifferences(ranked)
   }
 }
 
@@ -275,7 +371,9 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
       }
     })
     .sort((a, b) => b.baseScore - a.baseScore)
-    .slice(0, 6)
+    // Look at more candidates than we display so duplicate records do not crowd
+    // out genuinely different route alternatives further down the upstream list.
+    .slice(0, 14)
 
   return enrichPlansWithUpperWinds(basePlans)
 }
