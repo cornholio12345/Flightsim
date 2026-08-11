@@ -2,7 +2,8 @@ name: Android APK Build (unsigned)
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -13,5 +14,91 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4](#)
-
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Install Android SDK tools
+        run: |
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -sS -L https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
+          unzip -q cmdline-tools.zip
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+
+      - name: Find package.json and install dependencies
+        id: js
+        run: |
+          if [ -f package.json ]; then
+            proj_dir="."
+          else
+            proj_dir=$(find . -maxdepth 2 -name package.json -printf '%h\n' | head -n1 || true)
+          fi
+          if [ -z "$proj_dir" ]; then
+            echo "No package.json found" >&2
+            exit 1
+          fi
+          echo "project_dir=$proj_dir" >> "$GITHUB_OUTPUT"
+          cd "$proj_dir"
+          npm install --no-audit --no-fund
+
+      - name: Build web assets
+        run: |
+          cd "${{ steps.js.outputs.project_dir }}"
+          npm run build --if-present || npm run build
+
+      - name: Locate android directory
+        id: findandroid
+        run: |
+          if [ -d android ]; then
+            ad="android"
+          elif [ -d "${{ steps.js.outputs.project_dir }}/android" ]; then
+            ad="${{ steps.js.outputs.project_dir }}/android"
+          else
+            ad=$(find . -maxdepth 4 -type d -name android -print -quit || true)
+          fi
+          if [ -z "$ad" ]; then
+            echo "No android directory found" >&2
+            exit 1
+          fi
+          echo "android_dir=$ad" >> "$GITHUB_OUTPUT"
+
+      - name: Build Android (Gradle)
+        working-directory: ${{ steps.findandroid.outputs.android_dir }}
+        run: |
+          chmod +x ./gradlew || true
+          ./gradlew clean assembleRelease --no-daemon
+
+      - name: Find APK and upload
+        id: findapk
+        run: |
+          android_dir="${{ steps.findandroid.outputs.android_dir }}"
+          unsigned=$(find "$android_dir" -type f -path "*/outputs/apk/*/app-*-unsigned.apk" -print -quit || true)
+          if [ -z "$unsigned" ]; then
+            unsigned=$(find "$android_dir" -type f -path "*/outputs/apk/*/app-release.apk" -print -quit || true)
+          fi
+          built=$(find "$android_dir" -type f -name "*-release.apk" -print -quit || true)
+          echo "unsigned_apk=$unsigned" >> "$GITHUB_OUTPUT"
+          echo "built_apk=$built" >> "$GITHUB_OUTPUT"
+          echo "unsigned: $unsigned"
+          echo "built: $built"
+
+      - name: Upload artifact (unsigned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-unsigned
+          path: |
+            ${{ steps.findapk.outputs.unsigned_apk }}
+            ${{ steps.findapk.outputs.built_apk }}
