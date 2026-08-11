@@ -1,54 +1,160 @@
-/**
- * Generate waypoints along a great circle route between two points
- */
-export const generateRouteWaypoints = (startCoords, endCoords, numWaypoints = 50) => {
-  const waypoints = []
-  
-  for (let i = 0; i <= numWaypoints; i++) {
-    const f = i / numWaypoints
-    const A = Math.sin((1 - f) * getAngularDistance(startCoords, endCoords)) / Math.sin(getAngularDistance(startCoords, endCoords))
-    const B = Math.sin(f * getAngularDistance(startCoords, endCoords)) / Math.sin(getAngularDistance(startCoords, endCoords))
-    
-    const x = A * Math.cos(startCoords.lat * Math.PI / 180) * Math.cos(startCoords.lon * Math.PI / 180) + B * Math.cos(endCoords.lat * Math.PI / 180) * Math.cos(endCoords.lon * Math.PI / 180)
-    const y = A * Math.cos(startCoords.lat * Math.PI / 180) * Math.sin(startCoords.lon * Math.PI / 180) + B * Math.cos(endCoords.lat * Math.PI / 180) * Math.sin(endCoords.lon * Math.PI / 180)
-    const z = A * Math.sin(startCoords.lat * Math.PI / 180) + B * Math.sin(endCoords.lat * Math.PI / 180)
-    
-    const lat = Math.atan2(z, Math.sqrt(x * x + y * y)) * 180 / Math.PI
-    const lon = Math.atan2(y, x) * 180 / Math.PI
-    
-    waypoints.push({ lat, lon })
-  }
-  
-  return waypoints
-}
+const EARTH_RADIUS_NM = 3440.065
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+const toRad = value => value * Math.PI / 180
+const toDeg = value => value * 180 / Math.PI
 
-const getAngularDistance = (coord1, coord2) => {
-  const lat1 = coord1.lat * Math.PI / 180
-  const lat2 = coord2.lat * Math.PI / 180
-  const dLon = (coord2.lon - coord1.lon) * Math.PI / 180
-  
-  return Math.acos(
-    Math.sin(lat1) * Math.sin(lat2) +
-    Math.cos(lat1) * Math.cos(lat2) * Math.cos(dLon)
-  )
-}
-
-export const calculateDistance = (lat1, lon1, lat2, lon2) => {
-  const R = 6371 // Earth's radius in km
-  const dLat = (lat2 - lat1) * Math.PI / 180
-  const dLon = (lon2 - lon1) * Math.PI / 180
-  const a = 
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2)
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return Math.round(R * c)
+export const calculateDistanceNm = (lat1, lon1, lat2, lon2) => {
+  const phi1 = toRad(lat1)
+  const phi2 = toRad(lat2)
+  const dPhi = toRad(lat2 - lat1)
+  const dLambda = toRad(lon2 - lon1)
+  const a = Math.sin(dPhi / 2) ** 2 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) ** 2
+  return 2 * EARTH_RADIUS_NM * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
 export const calculateBearing = (lat1, lon1, lat2, lon2) => {
-  const dLon = lon2 - lon1
-  const y = Math.sin(dLon * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
-  const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
-            Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon * Math.PI / 180)
-  return Math.atan2(y, x) * 180 / Math.PI
+  const phi1 = toRad(lat1)
+  const phi2 = toRad(lat2)
+  const dLambda = toRad(lon2 - lon1)
+  const y = Math.sin(dLambda) * Math.cos(phi2)
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLambda)
+  return (toDeg(Math.atan2(y, x)) + 360) % 360
+}
+
+const interpolateGreatCircle = (start, end, fraction) => {
+  const f = clamp(fraction, 0, 1)
+  const lat1 = toRad(start.lat)
+  const lon1 = toRad(start.lon)
+  const lat2 = toRad(end.lat)
+  const lon2 = toRad(end.lon)
+  const angular = calculateDistanceNm(start.lat, start.lon, end.lat, end.lon) / EARTH_RADIUS_NM
+
+  if (angular < 1e-8) return { lat: start.lat, lon: start.lon }
+
+  const sinAngular = Math.sin(angular)
+  const a = Math.sin((1 - f) * angular) / sinAngular
+  const b = Math.sin(f * angular) / sinAngular
+  const x = a * Math.cos(lat1) * Math.cos(lon1) + b * Math.cos(lat2) * Math.cos(lon2)
+  const y = a * Math.cos(lat1) * Math.sin(lon1) + b * Math.cos(lat2) * Math.sin(lon2)
+  const z = a * Math.sin(lat1) + b * Math.sin(lat2)
+  return {
+    lat: toDeg(Math.atan2(z, Math.sqrt(x * x + y * y))),
+    lon: toDeg(Math.atan2(y, x))
+  }
+}
+
+export const prepareRoute = rawNodes => {
+  const nodes = (rawNodes || [])
+    .filter(node => Number.isFinite(Number(node?.lat)) && Number.isFinite(Number(node?.lon)))
+    .map(node => ({ ...node, lat: Number(node.lat), lon: Number(node.lon) }))
+
+  if (nodes.length < 2) throw new Error('A route needs at least two valid points.')
+
+  let cumulativeNm = 0
+  const prepared = nodes.map((node, index) => {
+    if (index > 0) {
+      const previous = nodes[index - 1]
+      cumulativeNm += calculateDistanceNm(previous.lat, previous.lon, node.lat, node.lon)
+    }
+    return { ...node, distanceFromStartNm: cumulativeNm }
+  })
+
+  return { nodes: prepared, totalNm: cumulativeNm }
+}
+
+export const positionAtProgress = (preparedRoute, progress) => {
+  const route = preparedRoute?.nodes ? preparedRoute : prepareRoute(preparedRoute)
+  const p = clamp(Number(progress || 0), 0, 1)
+  const targetNm = route.totalNm * p
+  const nodes = route.nodes
+
+  if (p <= 0) return { ...nodes[0], progress: 0 }
+  if (p >= 1) return { ...nodes[nodes.length - 1], progress: 1 }
+
+  let endIndex = nodes.findIndex(node => node.distanceFromStartNm >= targetNm)
+  if (endIndex <= 0) endIndex = 1
+  const start = nodes[endIndex - 1]
+  const end = nodes[endIndex]
+  const segmentNm = Math.max(0.0001, end.distanceFromStartNm - start.distanceFromStartNm)
+  const segmentProgress = (targetNm - start.distanceFromStartNm) / segmentNm
+  const point = interpolateGreatCircle(start, end, segmentProgress)
+
+  return {
+    ...point,
+    progress: p,
+    ident: segmentProgress < 0.5 ? start.ident : end.ident,
+    nextIdent: end.ident || null,
+    distanceFromStartNm: targetNm,
+    bearing: calculateBearing(start.lat, start.lon, end.lat, end.lon)
+  }
+}
+
+export const getFlightState = ({ route, progress, cruiseAltitudeFt = 36000, cruiseSpeedKt = 465 }) => {
+  const prepared = route?.nodes ? route : prepareRoute(route)
+  const p = clamp(Number(progress || 0), 0, 1)
+  const position = positionAtProgress(prepared, p)
+  const climbEnd = 0.12
+  const descentStart = 0.86
+  const cruiseAltitude = clamp(Number(cruiseAltitudeFt || 36000), 18000, 43000)
+  const cruiseSpeed = clamp(Number(cruiseSpeedKt || 465), 250, 560)
+
+  let phase = 'Cruise'
+  let altitudeFt = cruiseAltitude
+  let speedKt = cruiseSpeed
+
+  if (p < climbEnd) {
+    const f = p / climbEnd
+    phase = f < 0.08 ? 'Takeoff' : 'Climb'
+    altitudeFt = cruiseAltitude * Math.sin((f * Math.PI) / 2)
+    speedKt = 170 + (cruiseSpeed - 170) * f
+  } else if (p > descentStart) {
+    const f = (p - descentStart) / (1 - descentStart)
+    phase = f > 0.9 ? 'Approach' : 'Descent'
+    altitudeFt = cruiseAltitude * Math.cos((f * Math.PI) / 2)
+    speedKt = cruiseSpeed - (cruiseSpeed - 150) * f
+  }
+
+  return {
+    ...position,
+    phase,
+    altitudeFt: Math.max(0, Math.round(altitudeFt / 100) * 100),
+    speedKt: Math.max(0, Math.round(speedKt)),
+    travelledNm: Math.round(prepared.totalNm * p),
+    remainingNm: Math.max(0, Math.round(prepared.totalNm * (1 - p)))
+  }
+}
+
+export const nearestProgressOnRoute = (preparedRoute, lat, lon) => {
+  const route = preparedRoute?.nodes ? preparedRoute : prepareRoute(preparedRoute)
+  let best = { progress: 0, distanceNm: Infinity }
+
+  // Sampling each leg is robust enough for a GPS correction while keeping the
+  // implementation small and predictable offline.
+  route.nodes.slice(0, -1).forEach((start, index) => {
+    const end = route.nodes[index + 1]
+    const segmentStartNm = start.distanceFromStartNm
+    const segmentNm = end.distanceFromStartNm - segmentStartNm
+    const samples = Math.max(4, Math.min(30, Math.ceil(segmentNm / 25)))
+
+    for (let i = 0; i <= samples; i += 1) {
+      const f = i / samples
+      const point = interpolateGreatCircle(start, end, f)
+      const distanceNm = calculateDistanceNm(lat, lon, point.lat, point.lon)
+      if (distanceNm < best.distanceNm) {
+        best = {
+          progress: route.totalNm ? (segmentStartNm + segmentNm * f) / route.totalNm : 0,
+          distanceNm
+        }
+      }
+    }
+  })
+
+  return best
+}
+
+export const formatDuration = minutes => {
+  const total = Math.max(0, Math.round(Number(minutes || 0)))
+  const hours = Math.floor(total / 60)
+  const mins = total % 60
+  return `${hours}h ${String(mins).padStart(2, '0')}m`
 }

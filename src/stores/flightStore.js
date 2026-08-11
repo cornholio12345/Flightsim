@@ -1,72 +1,96 @@
+import Dexie from 'dexie'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { generateRouteWaypoints, calculateDistance, calculateBearing } from '../utils/routeUtils'
+import { prepareRoute } from '../utils/routeUtils'
+
+const db = new Dexie('FlightTrackerDB')
+db.version(2).stores({
+  trips: 'id,flightNumber,savedAt,status'
+})
+
+const newId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
 
 export const useFlightStore = defineStore('flight', () => {
-  const activeFlight = ref(null)
-  const routeData = ref(null)
-  
-  const setActiveFlight = (flight) => {
-    activeFlight.value = flight
+  const savedTrips = ref([])
+  const activeTrip = ref(null)
+
+  const refreshTrips = async () => {
+    savedTrips.value = await db.trips.orderBy('savedAt').reverse().toArray()
+    activeTrip.value = savedTrips.value.find(trip => trip.status === 'active') || null
+    return savedTrips.value
   }
-  
-  const generateRoute = async (flight) => {
-    // Generate waypoints for the route
-    const waypoints = generateRouteWaypoints(
-      flight.departure_coords,
-      flight.arrival_coords,
-      50 // number of waypoints
-    )
-    
-    routeData.value = {
-      flightNumber: flight.number,
-      departure: flight.from,
-      arrival: flight.to,
-      distance: calculateDistance(
-        flight.departure_coords.lat,
-        flight.departure_coords.lon,
-        flight.arrival_coords.lat,
-        flight.arrival_coords.lon
-      ),
-      waypoints: waypoints.map((point, index) => ({
-        ...point,
-        altitude: Math.min(35000, (index / waypoints.length) * 35000),
-        speed: 450 + Math.random() * 50
-      }))
+
+  const savePlanForOffline = async ({ plan, requestedFlightNumber, blockMinutes }) => {
+    const preparedRoute = prepareRoute(plan.nodes)
+    const trip = {
+      id: newId(),
+      planId: plan.id,
+      flightNumber: requestedFlightNumber || plan.flightNumber || '',
+      fromICAO: plan.fromICAO,
+      toICAO: plan.toICAO,
+      fromName: plan.fromName,
+      toName: plan.toName,
+      distanceNm: Math.round(plan.distanceNm || preparedRoute.totalNm),
+      maxAltitudeFt: plan.maxAltitudeFt || 36000,
+      blockMinutes: Math.max(20, Number(blockMinutes || 0)),
+      route: preparedRoute,
+      source: plan.source,
+      savedAt: Date.now(),
+      status: 'saved',
+      startedAt: null,
+      progressOffset: 0,
+      gpsCorrection: null
     }
-    
-    // Store in IndexedDB for offline access
-    try {
-      const db = new Dexie('FlightTrackerDB')
-      db.version(1).stores({ routes: 'flightNumber' })
-      await db.routes.put(routeData.value)
-    } catch (error) {
-      console.log('Could not store in IndexedDB:', error)
-    }
-    
-    return routeData.value
+    await db.trips.put(trip)
+    await refreshTrips()
+    return trip
   }
-  
-  const retrieveStoredRoute = async (flightNumber) => {
-    try {
-      const db = new Dexie('FlightTrackerDB')
-      db.version(1).stores({ routes: 'flightNumber' })
-      const stored = await db.routes.get(flightNumber)
-      if (stored) {
-        routeData.value = stored
-        return stored
-      }
-    } catch (error) {
-      console.log('Could not retrieve from IndexedDB:', error)
-    }
-    return null
+
+  const startTrip = async id => {
+    const trip = await db.trips.get(id)
+    if (!trip) throw new Error('Saved flight not found.')
+
+    const active = { ...trip, status: 'active', startedAt: Date.now(), progressOffset: 0, gpsCorrection: null }
+    await db.transaction('rw', db.trips, async () => {
+      const others = await db.trips.where('status').equals('active').toArray()
+      await Promise.all(others.filter(item => item.id !== id).map(item => db.trips.update(item.id, { status: 'saved', startedAt: null })))
+      await db.trips.put(active)
+    })
+    await refreshTrips()
+    return active
   }
-  
+
+  const stopTrip = async id => {
+    await db.trips.update(id, { status: 'saved', startedAt: null, progressOffset: 0, gpsCorrection: null })
+    await refreshTrips()
+  }
+
+  const applyGpsCorrection = async (id, { progressOffset, position, accuracyMeters, routeDistanceNm }) => {
+    const gpsCorrection = {
+      at: Date.now(),
+      lat: position.lat,
+      lon: position.lon,
+      accuracyMeters,
+      routeDistanceNm
+    }
+    await db.trips.update(id, { progressOffset, gpsCorrection })
+    await refreshTrips()
+    return activeTrip.value
+  }
+
+  const deleteTrip = async id => {
+    await db.trips.delete(id)
+    await refreshTrips()
+  }
+
   return {
-    activeFlight,
-    routeData,
-    setActiveFlight,
-    generateRoute,
-    retrieveStoredRoute
+    savedTrips,
+    activeTrip,
+    refreshTrips,
+    savePlanForOffline,
+    startTrip,
+    stopTrip,
+    applyGpsCorrection,
+    deleteTrip
   }
 })

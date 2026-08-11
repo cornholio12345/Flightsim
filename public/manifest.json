@@ -1,0 +1,18 @@
+{
+  "name": "FlightSim Offline Flight Progress",
+  "short_name": "FlightSim",
+  "description": "Cache a flight-plan route before takeoff and estimate flight progress offline.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#050b12",
+  "theme_color": "#091622",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
