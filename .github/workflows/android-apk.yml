@@ -5,12 +5,12 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
-
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: $RUNNER_TEMP/android-sdk
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -29,15 +29,14 @@ jobs:
 
       - name: Install Android command-line tools
         run: |
-          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
-          cd $ANDROID_SDK_ROOT/cmdline-tools
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT/cmdline-tools"
           curl -sS -L https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
           unzip -q cmdline-tools.zip
-          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
-          mv cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/ || true
-          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
-          yes | sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses
-          sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses <<< 'y' || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
       - name: Install npm deps
         run: npm ci
