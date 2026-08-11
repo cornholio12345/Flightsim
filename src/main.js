@@ -3,17 +3,17 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import './style.css'
 import { useFlightStore } from './stores/flightStore'
-import { mountDetailMapOverlay } from './utils/detailMapOverlay'
+import { mountDetailMapRasterOverlay } from './utils/detailMapRasterOverlay'
 
 const app = createApp(App)
 const pinia = createPinia()
 app.use(pinia)
 app.mount('#app')
 
-// The detailed online vector map is an optional overlay. The existing Three.js
-// globe remains the self-contained offline renderer used in flight.
+// The detailed online map uses a deliberately simple raster basemap for broad
+// Android WebView compatibility. The Three.js globe remains fully offline.
 const flightStore = useFlightStore(pinia)
-const unmountDetailMapOverlay = mountDetailMapOverlay(flightStore)
+const unmountDetailMapOverlay = mountDetailMapRasterOverlay(flightStore)
 window.addEventListener('pagehide', () => unmountDetailMapOverlay(), { once: true })
 
 // Register service worker for offline support
