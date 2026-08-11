@@ -26,21 +26,127 @@ const offlineCityData = () => ({
     if (!transformed.includes(oldCityBlock)) throw new Error('Could not locate city label zoom block in globeUtils.js')
     transformed = transformed.replace(oldCityBlock, newCityBlock)
 
-    // City labels are billboard sprites. Their world position used to land at the
-    // centre of the whole 512 px label texture even though the visible city dot is
-    // drawn at x=42. That shifted every city marker away from its true coordinate,
-    // while the independent night-light sprite stayed on the real coordinate.
-    // Anchor the city sprite on its dot and use the same radius as the light layer.
-    const oldLabelAnchor = `  const sprite = new THREE.Sprite(material)
+    // Billboard sprites always face the camera and were scaled from their individual
+    // camera distance. That makes map text appear to hover and slide across the globe.
+    // Turn labels into tangent planes fixed to the Earth and only use one global zoom
+    // scale. City texture x=42 is kept exactly on the real city coordinate.
+    const oldAddMapLabel = `const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
+  const material = new THREE.SpriteMaterial({ map: buildMapLabelTexture(text, kind), transparent: true, depthTest: true, depthWrite: false })
+  const sprite = new THREE.Sprite(material)
   sprite.position.copy(latLonVector(lat, lon, RADIUS + 0.034))
-  sprite.renderOrder = 8`
-    const newLabelAnchor = `  const sprite = new THREE.Sprite(material)
-  const cityLabel = kind === 'city'
-  sprite.position.copy(latLonVector(lat, lon, cityLabel ? RADIUS + 0.038 : RADIUS + 0.034))
-  if (cityLabel) sprite.center.set(42 / 512, 0.5)
-  sprite.renderOrder = cityLabel ? 10 : 8`
-    if (!transformed.includes(oldLabelAnchor)) throw new Error('Could not locate map label anchor block in globeUtils.js')
-    transformed = transformed.replace(oldLabelAnchor, newLabelAnchor)
+  sprite.renderOrder = 8
+  sprite.userData.maxCameraZ = maxCameraZ
+  sprite.userData.baseWidth = width
+  sprite.userData.baseHeight = height
+  sprite.userData.kind = kind
+  sprite.userData.normal = latLonVector(lat, lon, 1).normalize()
+  sprite.visible = false
+  earthGroup.add(sprite)
+  mapLabels.push(sprite)
+}`
+    const newAddMapLabel = `const tangentFrame = (lat, lon) => {
+  const normal = latLonVector(lat, lon, 1).normalize()
+  let east = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), normal)
+  if (east.lengthSq() < 1e-8) east = new THREE.Vector3(0, 0, -1)
+  east.normalize()
+  const north = new THREE.Vector3().crossVectors(normal, east).normalize()
+  const basis = new THREE.Matrix4().makeBasis(east, north, normal)
+  return {
+    normal,
+    east,
+    quaternion: new THREE.Quaternion().setFromRotationMatrix(basis)
+  }
+}
+
+const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
+  const material = new THREE.MeshBasicMaterial({
+    map: buildMapLabelTexture(text, kind),
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    alphaTest: 0.02,
+    side: THREE.DoubleSide
+  })
+  const label = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material)
+  const frame = tangentFrame(lat, lon)
+  const surfaceRadius = RADIUS + 0.012
+  label.position.copy(frame.normal.clone().multiplyScalar(surfaceRadius))
+  label.quaternion.copy(frame.quaternion)
+  label.renderOrder = kind === 'city' ? 10 : 8
+  label.userData.maxCameraZ = maxCameraZ
+  label.userData.baseWidth = width
+  label.userData.baseHeight = height
+  label.userData.kind = kind
+  label.userData.normal = frame.normal
+  label.userData.east = frame.east
+  label.userData.surfaceRadius = surfaceRadius
+  label.userData.anchorOffset = kind === 'city' ? (0.5 - 42 / 512) * width : 0
+  label.visible = false
+  earthGroup.add(label)
+  mapLabels.push(label)
+}`
+    if (!transformed.includes(oldAddMapLabel)) throw new Error('Could not locate addMapLabel in globeUtils.js')
+    transformed = transformed.replace(oldAddMapLabel, newAddMapLabel)
+
+    const oldUpdateMapLabels = `const updateMapLabels = () => {
+  if (!camera || !mapLabels.length) return
+  const worldPosition = new THREE.Vector3()
+  const toCamera = new THREE.Vector3()
+  mapLabels.forEach(label => {
+    if (camera.position.z > label.userData.maxCameraZ) {
+      label.visible = false
+      return
+    }
+    label.getWorldPosition(worldPosition)
+    toCamera.copy(camera.position).sub(worldPosition).normalize()
+    const facing = worldPosition.clone().normalize().dot(toCamera) > 0.04
+    label.visible = facing
+    if (!facing) return
+    const distance = camera.position.distanceTo(worldPosition)
+    const scaleFactor = THREE.MathUtils.clamp(distance / 3.4, 0.2, 1.05)
+    label.scale.set(label.userData.baseWidth * scaleFactor, label.userData.baseHeight * scaleFactor, 1)
+    if (label.userData.kind === 'city') {
+      const daylight = label.userData.normal.dot(sunDirectionLocal)
+      label.material.opacity = daylight < -0.08 ? 0.86 : 0.68
+    }
+  })
+}`
+    const newUpdateMapLabels = `const updateMapLabels = () => {
+  if (!camera || !earthGroup || !mapLabels.length) return
+  const worldPosition = new THREE.Vector3()
+  const worldNormal = new THREE.Vector3()
+  const toCamera = new THREE.Vector3()
+  const zoomScale = THREE.MathUtils.clamp((camera.position.z - RADIUS) / 3.1, 0.42, 1.0)
+  mapLabels.forEach(label => {
+    if (camera.position.z > label.userData.maxCameraZ) {
+      label.visible = false
+      return
+    }
+    label.getWorldPosition(worldPosition)
+    toCamera.copy(camera.position).sub(worldPosition).normalize()
+    worldNormal.copy(label.userData.normal).applyQuaternion(earthGroup.quaternion).normalize()
+    const facing = worldNormal.dot(toCamera) > 0.04
+    label.visible = facing
+    if (!facing) return
+
+    label.scale.set(label.userData.baseWidth * zoomScale, label.userData.baseHeight * zoomScale, 1)
+    label.position.copy(label.userData.normal).multiplyScalar(label.userData.surfaceRadius)
+    if (label.userData.anchorOffset) {
+      label.position.addScaledVector(label.userData.east, label.userData.anchorOffset * zoomScale)
+    }
+    if (label.userData.kind === 'city') {
+      const daylight = label.userData.normal.dot(sunDirectionLocal)
+      label.material.opacity = daylight < -0.08 ? 0.86 : 0.68
+    }
+  })
+}`
+    if (!transformed.includes(oldUpdateMapLabels)) throw new Error('Could not locate updateMapLabels in globeUtils.js')
+    transformed = transformed.replace(oldUpdateMapLabels, newUpdateMapLabels)
+
+    const oldCityLightRadius = `sprite.position.copy(normal.clone().multiplyScalar(RADIUS + 0.038))`
+    const newCityLightRadius = `sprite.position.copy(normal.clone().multiplyScalar(RADIUS + 0.012))`
+    if (!transformed.includes(oldCityLightRadius)) throw new Error('Could not locate city light radius in globeUtils.js')
+    transformed = transformed.replace(oldCityLightRadius, newCityLightRadius)
 
     return { code: transformed, map: null }
   }
@@ -58,8 +164,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'three': ['three'],
-          'leaflet': ['leaflet']
+          'three': ['three']
         }
       }
     }
