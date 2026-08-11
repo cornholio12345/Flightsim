@@ -24,13 +24,13 @@
 
           <div v-if="flightState" class="metric-grid">
             <div><span>Phase</span><strong>{{ flightState.phase }}</strong></div>
-            <div><span>Remaining</span><strong>{{ flightState.remainingNm }} nm</strong></div>
-            <div><span>Altitude</span><strong>{{ flightState.altitudeFt.toLocaleString() }} ft</strong></div>
+            <div><span>Remaining</span><strong>{{ nmToKm(flightState.remainingNm) }} km</strong></div>
+            <div><span>Altitude</span><strong>{{ ftToM(flightState.altitudeFt).toLocaleString() }} m</strong></div>
             <div><span>Time left</span><strong>{{ remainingTime }}</strong></div>
           </div>
 
           <p v-if="activeTrip.gpsCorrection" class="gps-note">
-            GPS corrected · {{ Math.round(activeTrip.gpsCorrection.routeDistanceNm) }} nm from route · accuracy {{ Math.round(activeTrip.gpsCorrection.accuracyMeters) }} m
+            GPS corrected · {{ nmToKm(activeTrip.gpsCorrection.routeDistanceNm) }} km from route · accuracy {{ Math.round(activeTrip.gpsCorrection.accuracyMeters) }} m
           </p>
 
           <div class="button-row">
@@ -69,7 +69,7 @@
               <span>{{ plan.fromICAO }} → {{ plan.toICAO }}</span>
             </div>
             <div class="result-meta">
-              <span>{{ plan.distanceNm }} nm</span>
+              <span>{{ nmToKm(plan.distanceNm) }} km</span>
               <span>{{ plan.waypoints }} pts</span>
             </div>
           </button>
@@ -79,7 +79,7 @@
           <div>
             <span class="kicker">SELECTED ROUTE</span>
             <h3>{{ selectedPlan.fromName }} → {{ selectedPlan.toName }}</h3>
-            <p>{{ selectedPlan.fromICAO }} → {{ selectedPlan.toICAO }} · {{ selectedPlan.distanceNm }} nm</p>
+            <p>{{ selectedPlan.fromICAO }} → {{ selectedPlan.toICAO }} · {{ nmToKm(selectedPlan.distanceNm) }} km</p>
           </div>
           <label>
             <span>Expected block time (minutes)</span>
@@ -95,7 +95,7 @@
           <article v-for="trip in savedTrips" :key="trip.id" class="saved-card">
             <div>
               <strong>{{ trip.flightNumber || `${trip.fromICAO} → ${trip.toICAO}` }}</strong>
-              <span>{{ trip.fromICAO }} → {{ trip.toICAO }} · {{ trip.distanceNm }} nm · {{ formatDuration(trip.blockMinutes) }}</span>
+              <span>{{ trip.fromICAO }} → {{ trip.toICAO }} · {{ nmToKm(trip.distanceNm) }} km · {{ formatDuration(trip.blockMinutes) }}</span>
             </div>
             <div class="saved-actions">
               <button v-if="trip.status !== 'active'" class="btn small primary" @click="startSavedFlight(trip)">Takeoff now</button>
@@ -113,7 +113,7 @@
         <canvas id="globe-canvas"></canvas>
         <div v-if="flightState" class="hud">
           <strong>{{ flightState.lat.toFixed(2) }}°, {{ flightState.lon.toFixed(2) }}°</strong>
-          <span>{{ flightState.speedKt }} kt · hdg {{ Math.round(flightState.bearing || 0) }}°</span>
+          <span>{{ Math.round(flightState.speedKt * 1.852) }} km/h · hdg {{ Math.round(flightState.bearing || 0) }}°</span>
           <span v-if="flightState.nextIdent">next {{ flightState.nextIdent }}</span>
         </div>
         <div v-else class="globe-empty">
@@ -148,6 +148,9 @@ const now = ref(Date.now())
 const isOnline = ref(navigator.onLine)
 let timer
 let globe
+
+const nmToKm = value => Math.round(Number(value || 0) * 1.852)
+const ftToM = value => Math.round(Number(value || 0) * 0.3048)
 
 const savedTrips = computed(() => flightStore.savedTrips)
 const activeTrip = computed(() => flightStore.activeTrip)
@@ -251,9 +254,8 @@ const correctWithGps = async () => {
   navigator.geolocation.getCurrentPosition(async position => {
     try {
       const nearest = nearestProgressOnRoute(trip.route, position.coords.latitude, position.coords.longitude)
-      // Ignore wildly implausible fixes (for example a terminal GPS position before takeoff).
       if (nearest.distanceNm > 120) {
-        throw new Error(`GPS fix is about ${Math.round(nearest.distanceNm)} nm from the route, so it was not applied.`)
+        throw new Error(`GPS fix is about ${nmToKm(nearest.distanceNm)} km from the route, so it was not applied.`)
       }
       const progressOffset = nearest.progress - timeProgress.value
       await flightStore.applyGpsCorrection(trip.id, {
