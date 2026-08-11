@@ -33,6 +33,12 @@ export const mountDetailMapOverlay = store => {
   detailContainer.style.display = 'none'
   panel.insertBefore(detailContainer, panel.firstChild)
 
+  const detailStatus = document.createElement('div')
+  detailStatus.className = 'detail-map-status'
+  detailStatus.textContent = 'Loading detail map…'
+  detailStatus.style.display = 'none'
+  detailContainer.appendChild(detailStatus)
+
   const switcher = document.createElement('div')
   switcher.className = 'map-mode-switch'
   const offlineButton = buildButton('Offline globe', true)
@@ -42,9 +48,15 @@ export const mountDetailMapOverlay = store => {
 
   let mode = 'offline'
   let detailInitialized = false
+  let detailReady = false
   let currentTripId = null
   let currentState = null
   let syncTimer = null
+
+  const setStatus = (text = '') => {
+    detailStatus.textContent = text
+    detailStatus.style.display = text ? 'block' : 'none'
+  }
 
   const syncTrip = () => {
     const trip = store.activeTrip
@@ -72,30 +84,42 @@ export const mountDetailMapOverlay = store => {
     updateDetailProgress(progress, { lat: state.lat, lon: state.lon })
   }
 
-  const ensureDetail = () => {
+  const startDetailMap = () => {
+    if (mode !== 'detail') return
     if (!detailInitialized) {
-      initializeDetailMap('detail-map')
-      detailInitialized = true
+      setStatus('Loading detail map…')
+      const detailMap = initializeDetailMap('detail-map', {
+        onReady: () => {
+          detailReady = true
+          setStatus('')
+          resizeDetailMap()
+          syncTrip()
+        },
+        onError: error => {
+          console.warn('Detail map error', error)
+          if (!detailReady) setStatus(navigator.onLine ? 'Detail map could not load · retry' : 'Detail map needs an internet connection')
+        }
+      })
+      detailInitialized = Boolean(detailMap)
+      if (!detailMap) setStatus('Detail map could not start · retry')
     }
     syncTrip()
-    window.setTimeout(resizeDetailMap, 60)
+    resizeDetailMap()
+    window.setTimeout(resizeDetailMap, 120)
+  }
+
+  const ensureDetail = () => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(startDetailMap)
+    })
   }
 
   const setMode = nextMode => {
-    if (nextMode === 'detail' && !navigator.onLine && !detailInitialized) {
-      detailButton.classList.add('needs-online')
-      detailButton.textContent = 'Detail map · online'
-      window.setTimeout(() => {
-        detailButton.classList.remove('needs-online')
-        detailButton.textContent = 'Detail map'
-      }, 1800)
-      return
-    }
     mode = nextMode
     const detail = mode === 'detail'
     offlineButton.classList.toggle('active', !detail)
     detailButton.classList.toggle('active', detail)
-    canvas.style.visibility = detail ? 'hidden' : 'visible'
+    canvas.style.display = detail ? 'none' : 'block'
     detailContainer.style.display = detail ? 'block' : 'none'
     if (detail) ensureDetail()
   }
