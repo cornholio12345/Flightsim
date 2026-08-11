@@ -1,11 +1,44 @@
 import * as THREE from 'three'
 import { feature } from 'topojson-client'
-import countries110m from 'world-atlas/countries-110m.json'
+import countries50m from 'world-atlas/countries-50m.json'
 
 const RADIUS = 2
-const MIN_CAMERA_Z = 3.9
+const MIN_CAMERA_Z = 2.55
 const MAX_CAMERA_Z = 8.5
 const DEFAULT_CAMERA_Z = 5.8
+const COUNTRY_COLLECTION = feature(countries50m, countries50m.objects.countries)
+
+const FEATURED_COUNTRIES = new Set([
+  'Egypt', 'Sudan', 'Saudi Arabia', 'Jordan', 'Israel', 'Turkey', 'Greece', 'Cyprus',
+  'Bulgaria', 'Romania', 'Hungary', 'Austria', 'Czechia', 'Czech Republic', 'Poland',
+  'Germany', 'Italy', 'France', 'Spain', 'United Kingdom', 'Ukraine', 'Russia'
+])
+
+const CITY_LABELS = [
+  ['London', 51.5074, -0.1278], ['Paris', 48.8566, 2.3522], ['Madrid', 40.4168, -3.7038],
+  ['Rome', 41.9028, 12.4964], ['Berlin', 52.52, 13.405], ['Hamburg', 53.5511, 9.9937],
+  ['Munich', 48.1351, 11.582], ['Frankfurt', 50.1109, 8.6821], ['Vienna', 48.2082, 16.3738],
+  ['Prague', 50.0755, 14.4378], ['Warsaw', 52.2297, 21.0122], ['Budapest', 47.4979, 19.0402],
+  ['Bucharest', 44.4268, 26.1025], ['Sofia', 42.6977, 23.3219], ['Athens', 37.9838, 23.7275],
+  ['Istanbul', 41.0082, 28.9784], ['Kyiv', 50.4501, 30.5234], ['Moscow', 55.7558, 37.6173],
+  ['Cairo', 30.0444, 31.2357], ['Alexandria', 31.2001, 29.9187], ['Hurghada', 27.2579, 33.8116],
+  ['Riyadh', 24.7136, 46.6753], ['Jeddah', 21.4858, 39.1925], ['Dubai', 25.2048, 55.2708],
+  ['Tel Aviv', 32.0853, 34.7818], ['New York', 40.7128, -74.006], ['Los Angeles', 34.0522, -118.2437],
+  ['Toronto', 43.6532, -79.3832], ['Mexico City', 19.4326, -99.1332], ['São Paulo', -23.5505, -46.6333],
+  ['Buenos Aires', -34.6037, -58.3816], ['Tokyo', 35.6762, 139.6503], ['Seoul', 37.5665, 126.978],
+  ['Beijing', 39.9042, 116.4074], ['Shanghai', 31.2304, 121.4737], ['Hong Kong', 22.3193, 114.1694],
+  ['Singapore', 1.3521, 103.8198], ['Bangkok', 13.7563, 100.5018], ['Delhi', 28.6139, 77.209],
+  ['Mumbai', 19.076, 72.8777], ['Sydney', -33.8688, 151.2093], ['Melbourne', -37.8136, 144.9631],
+  ['Cape Town', -33.9249, 18.4241], ['Johannesburg', -26.2041, 28.0473], ['Nairobi', -1.2921, 36.8219]
+]
+
+const SEA_LABELS = [
+  ['North Atlantic', 38, -34], ['Mediterranean Sea', 35, 18], ['Red Sea', 20.5, 38.5],
+  ['Black Sea', 43.3, 34], ['Baltic Sea', 58, 20], ['North Sea', 56, 3],
+  ['Adriatic Sea', 43, 15], ['Aegean Sea', 39, 25], ['Arabian Sea', 14, 65],
+  ['Persian Gulf', 26, 52], ['Indian Ocean', -13, 77], ['Caribbean Sea', 15, -75],
+  ['Gulf of Mexico', 24, -90], ['South China Sea', 14, 114], ['Sea of Japan', 40, 136]
+]
 
 let scene
 let camera
@@ -17,6 +50,7 @@ let aircraft
 let aircraftState = null
 let routeLine
 let routeMarkers = []
+let mapLabels = []
 let animationFrame
 let resizeObserver
 let interactionCleanup
@@ -78,10 +112,7 @@ const destinationPoint = (lat, lon, bearing, angularDistance = 0.012) => {
   const y = Math.sin(theta) * Math.sin(angularDistance) * Math.cos(phi1)
   const x = Math.cos(angularDistance) - Math.sin(phi1) * Math.sin(phi2)
   const lambda2 = lambda1 + Math.atan2(y, x)
-  return {
-    lat: THREE.MathUtils.radToDeg(phi2),
-    lon: THREE.MathUtils.radToDeg(lambda2)
-  }
+  return { lat: THREE.MathUtils.radToDeg(phi2), lon: THREE.MathUtils.radToDeg(lambda2) }
 }
 
 const countryColor = name => {
@@ -93,30 +124,34 @@ const countryColor = name => {
 
 const buildEarthTexture = () => {
   const canvas = document.createElement('canvas')
-  canvas.width = 2048
-  canvas.height = 1024
+  canvas.width = 4096
+  canvas.height = 2048
   const context = canvas.getContext('2d')
   const width = canvas.width
   const height = canvas.height
   const toXY = ([lon, lat]) => [((lon + 180) / 360) * width, ((90 - lat) / 180) * height]
 
   const ocean = context.createLinearGradient(0, 0, 0, height)
-  ocean.addColorStop(0, '#0d3a53')
-  ocean.addColorStop(0.5, '#0a2d43')
-  ocean.addColorStop(1, '#071f30')
+  ocean.addColorStop(0, '#0c364e')
+  ocean.addColorStop(0.5, '#092c41')
+  ocean.addColorStop(1, '#071e2e')
   context.fillStyle = ocean
   context.fillRect(0, 0, width, height)
 
-  context.strokeStyle = 'rgba(151, 194, 207, 0.12)'
+  // Keep the navigation grid away from the polar caps. Drawing every meridian all
+  // the way to ±90° made them collapse into the odd rings/starbursts visible at the poles.
+  context.strokeStyle = 'rgba(151, 194, 207, 0.10)'
   context.lineWidth = 1
+  const north70 = ((90 - 70) / 180) * height
+  const south70 = ((90 + 70) / 180) * height
   for (let lon = -180; lon <= 180; lon += 20) {
     const x = ((lon + 180) / 360) * width
     context.beginPath()
-    context.moveTo(x, 0)
-    context.lineTo(x, height)
+    context.moveTo(x, north70)
+    context.lineTo(x, south70)
     context.stroke()
   }
-  for (let lat = -80; lat <= 80; lat += 20) {
+  for (let lat = -60; lat <= 60; lat += 20) {
     const y = ((90 - lat) / 180) * height
     context.beginPath()
     context.moveTo(0, y)
@@ -124,8 +159,7 @@ const buildEarthTexture = () => {
     context.stroke()
   }
 
-  const collection = feature(countries110m, countries110m.objects.countries)
-  collection.features.forEach(country => {
+  COUNTRY_COLLECTION.features.forEach(country => {
     const name = country.properties?.name || String(country.id || '')
     const geometry = country.geometry
     const polygons = geometry?.type === 'Polygon'
@@ -135,16 +169,18 @@ const buildEarthTexture = () => {
         : []
 
     context.fillStyle = countryColor(name)
-    context.strokeStyle = 'rgba(216, 229, 222, 0.42)'
-    context.lineWidth = 1.15
+    context.strokeStyle = 'rgba(222, 233, 227, 0.48)'
+    context.lineWidth = 1.35
 
     polygons.forEach(polygon => {
       context.beginPath()
       polygon.forEach(ring => {
+        let previousX = null
         ring.forEach((coordinate, index) => {
           const [x, y] = toXY(coordinate)
-          if (index === 0) context.moveTo(x, y)
+          if (index === 0 || (previousX !== null && Math.abs(x - previousX) > width * 0.5)) context.moveTo(x, y)
           else context.lineTo(x, y)
+          previousX = x
         })
         context.closePath()
       })
@@ -156,11 +192,179 @@ const buildEarthTexture = () => {
   const texture = new THREE.CanvasTexture(canvas)
   texture.wrapS = THREE.RepeatWrapping
   texture.wrapT = THREE.ClampToEdgeWrapping
-  texture.minFilter = THREE.LinearFilter
+  texture.minFilter = THREE.LinearMipMapLinearFilter
   texture.magFilter = THREE.LinearFilter
-  texture.anisotropy = Math.min(8, renderer?.capabilities?.getMaxAnisotropy?.() || 1)
+  texture.anisotropy = Math.min(12, renderer?.capabilities?.getMaxAnisotropy?.() || 1)
   texture.needsUpdate = true
   return texture
+}
+
+const ringAreaAndCentroid = ring => {
+  if (!ring?.length) return null
+  let twiceArea = 0
+  let cx = 0
+  let cy = 0
+  let minLon = Infinity
+  let maxLon = -Infinity
+  let minLat = Infinity
+  let maxLat = -Infinity
+
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const [x0, y0] = ring[i]
+    const [x1, y1] = ring[i + 1]
+    const cross = x0 * y1 - x1 * y0
+    twiceArea += cross
+    cx += (x0 + x1) * cross
+    cy += (y0 + y1) * cross
+    minLon = Math.min(minLon, x0)
+    maxLon = Math.max(maxLon, x0)
+    minLat = Math.min(minLat, y0)
+    maxLat = Math.max(maxLat, y0)
+  }
+
+  if (Math.abs(twiceArea) < 1e-6) return null
+  const lon = cx / (3 * twiceArea)
+  const lat = cy / (3 * twiceArea)
+  const spanLon = Math.min(180, Math.max(0, maxLon - minLon))
+  const spanLat = Math.max(0, maxLat - minLat)
+  const score = spanLon * spanLat * Math.max(0.25, Math.cos(THREE.MathUtils.degToRad(lat)))
+  return { lon, lat, area: Math.abs(twiceArea / 2), score }
+}
+
+const countryLabelInfo = country => {
+  const geometry = country.geometry
+  const polygons = geometry?.type === 'Polygon'
+    ? [geometry.coordinates]
+    : geometry?.type === 'MultiPolygon'
+      ? geometry.coordinates
+      : []
+  let best = null
+  polygons.forEach(polygon => {
+    const info = ringAreaAndCentroid(polygon?.[0])
+    if (info && (!best || info.area > best.area)) best = info
+  })
+  return best
+}
+
+const buildMapLabelTexture = (text, kind) => {
+  const canvas = document.createElement('canvas')
+  canvas.width = kind === 'city' ? 512 : 768
+  canvas.height = kind === 'city' ? 96 : 128
+  const context = canvas.getContext('2d')
+  context.textBaseline = 'middle'
+  context.shadowColor = 'rgba(2, 8, 12, 0.95)'
+  context.shadowBlur = kind === 'city' ? 6 : 9
+  context.shadowOffsetY = 2
+
+  if (kind === 'country') {
+    context.font = '700 45px system-ui, sans-serif'
+    context.textAlign = 'center'
+    context.fillStyle = 'rgba(235, 242, 237, 0.92)'
+    context.fillText(String(text).toUpperCase(), canvas.width / 2, canvas.height / 2)
+  } else if (kind === 'sea') {
+    context.font = 'italic 600 38px system-ui, sans-serif'
+    context.textAlign = 'center'
+    context.fillStyle = 'rgba(133, 192, 221, 0.82)'
+    context.fillText(String(text), canvas.width / 2, canvas.height / 2)
+  } else {
+    context.beginPath()
+    context.arc(42, canvas.height / 2, 8, 0, Math.PI * 2)
+    context.fillStyle = '#f4d36d'
+    context.fill()
+    context.font = '650 34px system-ui, sans-serif'
+    context.textAlign = 'left'
+    context.fillStyle = 'rgba(242, 247, 249, 0.96)'
+    context.fillText(String(text), 66, canvas.height / 2)
+  }
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  texture.needsUpdate = true
+  return texture
+}
+
+const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: buildMapLabelTexture(text, kind),
+    transparent: true,
+    depthTest: true,
+    depthWrite: false
+  }))
+  sprite.position.copy(latLonVector(lat, lon, RADIUS + 0.034))
+  sprite.renderOrder = 8
+  sprite.userData.maxCameraZ = maxCameraZ
+  sprite.userData.baseWidth = width
+  sprite.userData.baseHeight = height
+  sprite.userData.kind = kind
+  sprite.visible = false
+  earthGroup.add(sprite)
+  mapLabels.push(sprite)
+}
+
+const createMapLabels = () => {
+  COUNTRY_COLLECTION.features.forEach(country => {
+    const name = country.properties?.name
+    if (!name || name === 'Antarctica') return
+    const info = countryLabelInfo(country)
+    if (!info) return
+
+    const featured = FEATURED_COUNTRIES.has(name)
+    let maxCameraZ = null
+    if (featured) maxCameraZ = 4.85
+    else if (info.score >= 500) maxCameraZ = 5.25
+    else if (info.score >= 65) maxCameraZ = 4.35
+    else if (info.score >= 22) maxCameraZ = 3.45
+    if (!maxCameraZ) return
+
+    const labelWidth = Math.min(1.05, Math.max(0.52, 0.39 + String(name).length * 0.035))
+    addMapLabel({
+      text: name,
+      lat: info.lat,
+      lon: info.lon,
+      kind: 'country',
+      maxCameraZ,
+      width: labelWidth,
+      height: 0.18
+    })
+  })
+
+  SEA_LABELS.forEach(([text, lat, lon]) => {
+    addMapLabel({ text, lat, lon, kind: 'sea', maxCameraZ: 4.25, width: 0.92, height: 0.17 })
+  })
+
+  CITY_LABELS.forEach(([text, lat, lon]) => {
+    const width = Math.min(0.9, Math.max(0.46, 0.34 + String(text).length * 0.028))
+    addMapLabel({ text, lat, lon, kind: 'city', maxCameraZ: 3.35, width, height: 0.14 })
+  })
+}
+
+const updateMapLabels = () => {
+  if (!camera || !mapLabels.length) return
+  const worldPosition = new THREE.Vector3()
+  const toCamera = new THREE.Vector3()
+
+  mapLabels.forEach(label => {
+    const inZoomRange = camera.position.z <= label.userData.maxCameraZ
+    if (!inZoomRange) {
+      label.visible = false
+      return
+    }
+
+    label.getWorldPosition(worldPosition)
+    toCamera.copy(camera.position).sub(worldPosition).normalize()
+    const facing = worldPosition.clone().normalize().dot(toCamera) > 0.04
+    label.visible = facing
+    if (!facing) return
+
+    const distance = camera.position.distanceTo(worldPosition)
+    const scaleFactor = THREE.MathUtils.clamp(distance / 3.4, 0.28, 1.05)
+    label.scale.set(
+      label.userData.baseWidth * scaleFactor,
+      label.userData.baseHeight * scaleFactor,
+      1
+    )
+  })
 }
 
 const buildPlaneTexture = () => {
@@ -220,7 +424,6 @@ const buildTagTexture = (text, accent) => {
   canvas.width = 256
   canvas.height = 96
   const context = canvas.getContext('2d')
-
   context.fillStyle = 'rgba(4, 15, 22, 0.88)'
   context.strokeStyle = accent
   context.lineWidth = 3
@@ -228,7 +431,6 @@ const buildTagTexture = (text, accent) => {
   context.roundRect(18, 16, 220, 64, 20)
   context.fill()
   context.stroke()
-
   context.font = '800 36px system-ui, sans-serif'
   context.textAlign = 'center'
   context.textBaseline = 'middle'
@@ -244,10 +446,7 @@ const buildTagTexture = (text, accent) => {
 
 const createAircraftMarker = () => {
   const material = new THREE.SpriteMaterial({
-    map: buildPlaneTexture(),
-    transparent: true,
-    depthTest: false,
-    depthWrite: false
+    map: buildPlaneTexture(), transparent: true, depthTest: false, depthWrite: false
   })
   const sprite = new THREE.Sprite(material)
   sprite.scale.set(0.31, 0.31, 1)
@@ -260,7 +459,6 @@ const createAircraftMarker = () => {
 const createRouteMarker = (node, label, accentHex, accentCss) => {
   const group = new THREE.Group()
   const normal = latLonVector(node.lat, node.lon, 1).normalize()
-
   const pin = new THREE.Mesh(
     new THREE.SphereGeometry(0.034, 14, 14),
     new THREE.MeshBasicMaterial({ color: accentHex })
@@ -269,10 +467,7 @@ const createRouteMarker = (node, label, accentHex, accentCss) => {
   group.add(pin)
 
   const tag = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: buildTagTexture(label, accentCss),
-    transparent: true,
-    depthTest: false,
-    depthWrite: false
+    map: buildTagTexture(label, accentCss), transparent: true, depthTest: false, depthWrite: false
   }))
   tag.position.copy(normal.clone().multiplyScalar(RADIUS + 0.09))
   tag.scale.set(0.57, 0.21, 1)
@@ -347,14 +542,12 @@ const enableInteractions = canvas => {
   const onPointerMove = event => {
     if (!activePointers.has(event.pointerId)) return
     activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
-
     if (activePointers.size >= 2) {
       const distance = pointerDistance()
       if (distance && previousPinchDistance && camera) setZoom(camera.position.z * (previousPinchDistance / distance))
       previousPinchDistance = distance
       return
     }
-
     if (!dragging || !earthGroup) return
     const dx = event.clientX - previousX
     const dy = event.clientY - previousY
@@ -372,9 +565,7 @@ const enableInteractions = canvas => {
       previousX = remaining.x
       previousY = remaining.y
       dragging = true
-    } else if (!activePointers.size) {
-      dragging = false
-    }
+    } else if (!activePointers.size) dragging = false
   }
 
   const onWheel = event => {
@@ -404,7 +595,7 @@ export const initializeGlobe = canvasId => {
 
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0x06111a)
-  camera = new THREE.PerspectiveCamera(48, 1, 0.1, 100)
+  camera = new THREE.PerspectiveCamera(48, 1, 0.05, 100)
   camera.position.set(0, 0.08, DEFAULT_CAMERA_Z)
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
@@ -417,28 +608,26 @@ export const initializeGlobe = canvasId => {
 
   earthTexture = buildEarthTexture()
   globe = new THREE.Mesh(
-    new THREE.SphereGeometry(RADIUS, 72, 72),
+    new THREE.SphereGeometry(RADIUS, 96, 96),
     new THREE.MeshPhongMaterial({
       map: earthTexture,
       color: 0xffffff,
       emissive: 0x061018,
-      emissiveIntensity: 0.2,
-      shininess: 7
+      emissiveIntensity: 0.18,
+      shininess: 6
     })
   )
   earthGroup.add(globe)
 
   const atmosphere = new THREE.Mesh(
-    new THREE.SphereGeometry(RADIUS + 0.035, 56, 56),
+    new THREE.SphereGeometry(RADIUS + 0.035, 64, 64),
     new THREE.MeshBasicMaterial({
-      color: 0x5cb5df,
-      transparent: true,
-      opacity: 0.055,
-      side: THREE.BackSide
+      color: 0x5cb5df, transparent: true, opacity: 0.05, side: THREE.BackSide
     })
   )
   earthGroup.add(atmosphere)
 
+  createMapLabels()
   aircraft = createAircraftMarker()
   earthGroup.add(aircraft)
 
@@ -461,6 +650,7 @@ export const initializeGlobe = canvasId => {
   const animate = () => {
     animationFrame = requestAnimationFrame(animate)
     updateAircraftScreenRotation()
+    updateMapLabels()
     renderer.render(scene, camera)
   }
   animate()
@@ -470,7 +660,6 @@ export const initializeGlobe = canvasId => {
 
 export const setRouteOnGlobe = (nodes, labels = {}) => {
   if (!earthGroup) return
-
   if (routeLine) {
     earthGroup.remove(routeLine)
     disposeObject(routeLine)
@@ -481,21 +670,20 @@ export const setRouteOnGlobe = (nodes, labels = {}) => {
     disposeObject(marker)
   })
   routeMarkers = []
-
   if (!nodes || nodes.length < 2) return
 
   const points = []
   for (let index = 0; index < nodes.length - 1; index += 1) {
     const start = nodes[index]
     const end = nodes[index + 1]
-    const steps = 10
+    const steps = 12
     for (let step = 0; step < steps; step += 1) points.push(greatCirclePoint(start, end, step / steps))
   }
   points.push(latLonVector(nodes[nodes.length - 1].lat, nodes[nodes.length - 1].lon, RADIUS + 0.026))
 
   routeLine = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(points),
-    new THREE.LineBasicMaterial({ color: 0x77ebbb, transparent: true, opacity: 0.88 })
+    new THREE.LineBasicMaterial({ color: 0x77ebbb, transparent: true, opacity: 0.9 })
   )
   routeLine.renderOrder = 3
   earthGroup.add(routeLine)
@@ -506,7 +694,6 @@ export const setRouteOnGlobe = (nodes, labels = {}) => {
   const endMarker = createRouteMarker(nodes[nodes.length - 1], endLabel, 0x83efc0, '#83efc0')
   routeMarkers.push(startMarker, endMarker)
   earthGroup.add(startMarker, endMarker)
-
   focusRoute(nodes)
 }
 
@@ -528,12 +715,17 @@ export const destroyGlobe = () => {
   resizeObserver?.disconnect?.()
   interactionCleanup?.()
   routeMarkers.forEach(disposeObject)
+  mapLabels.forEach(label => {
+    earthGroup?.remove(label)
+    disposeObject(label)
+  })
   disposeObject(routeLine)
   disposeObject(aircraft)
   earthTexture?.dispose?.()
   renderer?.dispose?.()
   scene = camera = renderer = earthGroup = globe = aircraft = routeLine = null
   routeMarkers = []
+  mapLabels = []
   aircraftState = null
   earthTexture = null
   interactionCleanup = null
