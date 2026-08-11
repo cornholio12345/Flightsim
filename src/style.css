@@ -33,22 +33,33 @@ button:disabled {
   position: absolute;
   inset: 0;
   z-index: 5;
+  overflow: hidden;
+  background: #07121a;
+}
+
+.detail-map-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
   background: #07121a;
 }
 
 .detail-map-status {
   position: absolute;
-  z-index: 18;
+  z-index: 42;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
   padding: 8px 11px;
   border-radius: 999px;
   color: #c5d5dc;
-  background: rgba(4, 15, 22, 0.82);
+  background: rgba(4, 15, 22, 0.88);
   border: 1px solid rgba(255, 255, 255, 0.12);
   font-size: 10px;
   font-weight: 700;
+  white-space: nowrap;
   pointer-events: none;
 }
 
@@ -59,9 +70,19 @@ button:disabled {
   z-index: 20;
 }
 
+.globe-panel.detail-map-active .hud,
+.globe-panel.detail-map-active .compare-hint,
+.globe-panel.detail-map-active .globe-empty {
+  display: none !important;
+}
+
+.globe-panel.detail-map-active .follow-btn {
+  z-index: 45;
+}
+
 .map-mode-switch {
   position: absolute;
-  z-index: 35;
+  z-index: 50;
   left: 14px;
   top: 14px;
   display: flex;
@@ -96,34 +117,65 @@ button:disabled {
   background: rgba(185, 119, 38, 0.22);
 }
 
-.detail-plane-marker {
-  width: 30px;
-  height: 30px;
-  display: grid;
+.detail-map-canvas.leaflet-container {
+  font-family: inherit;
+  background: #07121a;
+}
+
+.detail-map-canvas .leaflet-control-zoom,
+.detail-map-canvas .leaflet-control-attribution {
+  border: 0;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.24);
+}
+
+.detail-map-canvas .leaflet-control-zoom a {
+  color: #d8e8ee;
+  background: rgba(5, 19, 28, 0.88);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.detail-map-canvas .leaflet-control-attribution {
+  color: #8ca0aa;
+  background: rgba(5, 19, 28, 0.74);
+  font-size: 8px;
+}
+
+.detail-map-canvas .leaflet-control-attribution a {
+  color: #8fdcba;
+}
+
+.detail-plane-leaflet-icon {
+  width: 32px !important;
+  height: 32px !important;
+  display: grid !important;
   place-items: center;
-  border-radius: 50%;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.detail-plane-leaflet-icon span {
+  display: block;
   color: #fff;
-  font-size: 23px;
+  font-size: 24px;
   line-height: 1;
+  transform-origin: 50% 50%;
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.85);
   filter: drop-shadow(0 0 3px rgba(117, 239, 185, 0.75));
-  pointer-events: none;
 }
 
-.detail-plane-marker span {
-  display: block;
-  transform: rotate(0deg);
+.detail-airport-label {
+  color: #eef7f3;
+  background: rgba(4, 15, 22, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  box-shadow: none;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 6px;
 }
 
-.detail-map-container .maplibregl-ctrl-bottom-left {
-  z-index: 8;
-  font-size: 9px;
-}
-
-.detail-map-container .maplibregl-ctrl-bottom-right {
-  z-index: 8;
-  margin-bottom: 8px;
-  margin-right: 8px;
+.detail-airport-label::before {
+  display: none;
 }
 
 ::-webkit-scrollbar {
