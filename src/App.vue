@@ -288,7 +288,7 @@ onMounted(async () => {
 })
 
 watch(flightState, state => {
-  if (state && globe) updateAircraftPosition(state.lat, state.lon, state.altitudeFt)
+  if (state && globe) updateAircraftPosition(state.lat, state.lon, state.altitudeFt, state.bearing)
 }, { immediate: true })
 
 watch(activeTrip, trip => {
