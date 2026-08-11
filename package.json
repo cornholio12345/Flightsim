@@ -1,0 +1,25 @@
+{
+  "name": "flightsim-tracker",
+  "version": "0.1.0",
+  "description": "Offline 3D flight position tracker with route simulation",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "vue": "^3.3.0",
+    "three": "^r128",
+    "pinia": "^2.1.0",
+    "axios": "^1.4.0",
+    "cheerio": "^1.0.0-rc.12",
+    "dexie": "^3.2.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^4.2.0",
+    "vite": "^4.3.0",
+    "@vue/test-utils": "^2.4.0"
+  }
+}
