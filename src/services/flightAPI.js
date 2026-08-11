@@ -4,6 +4,7 @@ const API_HEADERS = {
   'X-Units': 'AVIATION'
 }
 const AIRPORT_DATA_BASE = 'https://airport-data.com/api/ap_info.json'
+const WEATHER_BASE = 'https://api.open-meteo.com/v1/forecast'
 
 const clean = value => String(value || '').trim()
 
@@ -34,13 +35,10 @@ const resolveAirport = async value => {
   const query = clean(value).toUpperCase()
   if (!query) return null
 
-  // Flight Plan Database supports exact ICAO matching directly.
   if (/^[A-Z0-9]{4}$/.test(query)) {
     return { icao: query, iata: '', name: query }
   }
 
-  // The UI intentionally accepts IATA codes. Resolve those to ICAO first so the
-  // route search can use Flight Plan Database's exact fromICAO/toICAO filters.
   if (/^[A-Z]{3}$/.test(query)) {
     try {
       const response = await fetch(`${AIRPORT_DATA_BASE}?iata=${encodeURIComponent(query)}`, {
@@ -57,22 +55,30 @@ const resolveAirport = async value => {
         }
       }
     } catch (_) {
-      // Airport resolution is a convenience. Fall back to Flight Plan Database's
-      // broader text search if this auxiliary service is unavailable.
+      // Airport resolution is a convenience. Route search can still fall back.
     }
   }
 
   return { icao: '', iata: '', name: clean(value), query: clean(value) }
 }
 
+const freshnessScore = updatedAt => {
+  const timestamp = Date.parse(updatedAt || '')
+  if (!Number.isFinite(timestamp)) return 0
+  const ageDays = Math.max(0, (Date.now() - timestamp) / 86_400_000)
+  return Math.max(0, 90 - ageDays)
+}
+
 const scorePlan = (plan, normalizedFlight = '') => {
   const tags = new Set((plan.tags || []).map(tag => String(tag).toLowerCase()))
-  let score = Number(plan.popularity || 0)
-  if (normalizeFlightNumber(plan.flightNumber) === normalizedFlight && normalizedFlight) score += 2000
-  if (tags.has('commercial')) score += 500
-  if (tags.has('real')) score += 300
-  if (tags.has('decoded')) score += 100
-  score += Math.min(100, Number(plan.waypoints || 0))
+  const popularity = Math.max(0, Number(plan.popularity || 0))
+  let score = Math.min(120, Math.log2(popularity + 1) * 18)
+  if (normalizeFlightNumber(plan.flightNumber) === normalizedFlight && normalizedFlight) score += 500
+  if (tags.has('commercial')) score += 120
+  if (tags.has('real')) score += 100
+  if (tags.has('decoded')) score += 30
+  score += Math.min(60, Number(plan.waypoints || 0))
+  score += freshnessScore(plan.updatedAt)
   return score
 }
 
@@ -86,6 +92,122 @@ const dedupePlans = plans => {
     seen.add(id)
     return true
   })
+}
+
+const normalizeNodes = plan => (plan?.route?.nodes || [])
+  .filter(node => Number.isFinite(Number(node?.lat)) && Number.isFinite(Number(node?.lon)))
+  .map(node => ({
+    ident: node.ident || '',
+    name: node.name || null,
+    type: node.type || 'UKN',
+    lat: Number(node.lat),
+    lon: Number(node.lon),
+    altitudeFt: Number(node.alt || 0),
+    via: node.via || null
+  }))
+
+const calculateBearing = (a, b) => {
+  const lat1 = Number(a.lat) * Math.PI / 180
+  const lat2 = Number(b.lat) * Math.PI / 180
+  const dLon = (Number(b.lon) - Number(a.lon)) * Math.PI / 180
+  const y = Math.sin(dLon) * Math.cos(lat2)
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon)
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
+}
+
+const routeSamples = nodes => {
+  if (!nodes || nodes.length < 2) return []
+  const fractions = nodes.length < 5 ? [0, 0.5] : [0.18, 0.5, 0.82]
+  return fractions.map(fraction => {
+    const index = Math.min(nodes.length - 2, Math.max(0, Math.round((nodes.length - 2) * fraction)))
+    return {
+      lat: nodes[index].lat,
+      lon: nodes[index].lon,
+      course: calculateBearing(nodes[index], nodes[index + 1])
+    }
+  })
+}
+
+const viaSummary = nodes => {
+  if (!nodes || nodes.length < 5) return ''
+  const candidates = [
+    nodes[Math.floor(nodes.length / 3)]?.ident,
+    nodes[Math.floor(nodes.length * 2 / 3)]?.ident
+  ].filter(Boolean)
+  return [...new Set(candidates)].join(' · ')
+}
+
+const enrichPlansWithUpperWinds = async plans => {
+  if (!plans.length) return plans
+
+  const enriched = await Promise.all(plans.map(async plan => {
+    try {
+      const full = await requestJson(`/plan/${encodeURIComponent(plan.id)}`)
+      const nodes = normalizeNodes(full)
+      return { ...plan, routeNodesForRanking: nodes, viaSummary: viaSummary(nodes) }
+    } catch (_) {
+      return plan
+    }
+  }))
+
+  const sampleEntries = []
+  enriched.forEach((plan, planIndex) => {
+    routeSamples(plan.routeNodesForRanking).forEach(sample => sampleEntries.push({ planIndex, ...sample }))
+  })
+
+  if (!sampleEntries.length) return enriched.map(({ routeNodesForRanking, ...plan }) => plan)
+
+  try {
+    const params = new URLSearchParams({
+      latitude: sampleEntries.map(item => item.lat.toFixed(3)).join(','),
+      longitude: sampleEntries.map(item => item.lon.toFixed(3)).join(','),
+      hourly: 'wind_speed_250hPa,wind_direction_250hPa',
+      forecast_hours: '1',
+      timezone: 'GMT'
+    })
+    const response = await fetch(`${WEATHER_BASE}?${params}`)
+    if (!response.ok) throw new Error(`Weather ${response.status}`)
+    const data = await response.json()
+    const forecasts = Array.isArray(data) ? data : [data]
+    const windByPlan = enriched.map(() => [])
+
+    sampleEntries.forEach((sample, index) => {
+      const forecast = forecasts[index]
+      const speed = Number(forecast?.hourly?.wind_speed_250hPa?.[0])
+      const directionFrom = Number(forecast?.hourly?.wind_direction_250hPa?.[0])
+      if (!Number.isFinite(speed) || !Number.isFinite(directionFrom)) return
+      const windTo = (directionFrom + 180) % 360
+      const angle = (windTo - sample.course) * Math.PI / 180
+      windByPlan[sample.planIndex].push(speed * Math.cos(angle))
+    })
+
+    const minDistance = Math.min(...enriched.map(plan => Number(plan.distanceNm || 0)).filter(Number.isFinite))
+    return enriched
+      .map((plan, index) => {
+        const values = windByPlan[index]
+        const upperWindKmh = values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null
+        const distancePenalty = Math.max(0, Number(plan.distanceNm || 0) - minDistance) * 0.35
+        const weatherBonus = Number.isFinite(upperWindKmh) ? Math.max(-120, Math.min(120, upperWindKmh)) * 1.5 : 0
+        let weatherLabel = 'Upper-wind data unavailable'
+        if (Number.isFinite(upperWindKmh)) {
+          if (upperWindKmh >= 10) weatherLabel = `Tailwind +${upperWindKmh} km/h`
+          else if (upperWindKmh <= -10) weatherLabel = `Headwind ${Math.abs(upperWindKmh)} km/h`
+          else weatherLabel = 'Upper winds nearly neutral'
+        }
+        const { routeNodesForRanking, ...cleanPlan } = plan
+        return {
+          ...cleanPlan,
+          upperWindKmh,
+          weatherLabel,
+          recommendationScore: Number(plan.baseScore || 0) + weatherBonus - distancePenalty
+        }
+      })
+      .sort((a, b) => Number(b.recommendationScore || b.baseScore || 0) - Number(a.recommendationScore || a.baseScore || 0))
+      .map((plan, index) => ({ ...plan, recommendationRank: index + 1 }))
+  } catch (_) {
+    return enriched
+      .map(({ routeNodesForRanking, ...plan }, index) => ({ ...plan, recommendationRank: index + 1, weatherLabel: 'Upper-wind data unavailable' }))
+  }
 }
 
 export const searchFlightPlans = async ({ flightNumber, from, to }) => {
@@ -105,9 +227,6 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
   const searches = []
   const errors = []
 
-  // Search by commercial flight number independently. Community flight-plan data
-  // does not consistently contain airline flight numbers, and a server-side error
-  // here must never prevent the route fallback from running.
   if (normalizedFlight) {
     try {
       const byFlight = await requestJson(buildPlanSearchPath({ flightNumber: normalizedFlight }))
@@ -117,9 +236,6 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
     }
   }
 
-  // Route lookup is the reliable fallback for our use case: we need a plausible
-  // route to approximate progress, not necessarily a community plan tagged with
-  // the exact commercial flight number.
   if (fromQuery && toQuery) {
     try {
       const routeParams = resolvedFrom?.icao && resolvedTo?.icao
@@ -132,49 +248,41 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
     }
   }
 
-  // A flight-number-only query has no useful fallback if the upstream endpoint
-  // itself fails. Surface that error; otherwise prefer returning route results.
-  if (!searches.length && errors.length && !(fromQuery && toQuery)) {
-    throw errors[0]
-  }
+  if (!searches.length && errors.length && !(fromQuery && toQuery)) throw errors[0]
 
-  const plans = dedupePlans(searches)
-
-  return plans
+  const basePlans = dedupePlans(searches)
     .filter(plan => plan?.id && plan?.fromICAO && plan?.toICAO)
-    .sort((a, b) => scorePlan(b, normalizedFlight) - scorePlan(a, normalizedFlight))
-    .slice(0, 12)
-    .map(plan => ({
-      id: plan.id,
-      flightNumber: plan.flightNumber || normalizedFlight || '',
-      fromICAO: plan.fromICAO,
-      toICAO: plan.toICAO,
-      fromName: plan.fromName || plan.fromICAO,
-      toName: plan.toName || plan.toICAO,
-      distanceNm: Math.round(Number(plan.distance || 0)),
-      maxAltitudeFt: Number(plan.maxAltitude || 0),
-      waypoints: Number(plan.waypoints || 0),
-      tags: plan.tags || [],
-      popularity: Number(plan.popularity || 0),
-      updatedAt: plan.updatedAt || null,
-      resolvedFrom: resolvedFrom || null,
-      resolvedTo: resolvedTo || null
-    }))
+    .map(plan => {
+      const baseScore = scorePlan(plan, normalizedFlight)
+      const fromIATA = resolvedFrom?.icao === plan.fromICAO ? resolvedFrom.iata : ''
+      const toIATA = resolvedTo?.icao === plan.toICAO ? resolvedTo.iata : ''
+      return {
+        id: plan.id,
+        flightNumber: plan.flightNumber || normalizedFlight || '',
+        fromICAO: plan.fromICAO,
+        toICAO: plan.toICAO,
+        fromIATA,
+        toIATA,
+        fromName: plan.fromName || resolvedFrom?.name || plan.fromICAO,
+        toName: plan.toName || resolvedTo?.name || plan.toICAO,
+        distanceNm: Math.round(Number(plan.distance || 0)),
+        maxAltitudeFt: Number(plan.maxAltitude || 0),
+        waypoints: Number(plan.waypoints || 0),
+        tags: plan.tags || [],
+        popularity: Number(plan.popularity || 0),
+        updatedAt: plan.updatedAt || null,
+        baseScore
+      }
+    })
+    .sort((a, b) => b.baseScore - a.baseScore)
+    .slice(0, 6)
+
+  return enrichPlansWithUpperWinds(basePlans)
 }
 
 export const fetchFlightPlan = async id => {
   const plan = await requestJson(`/plan/${encodeURIComponent(id)}`)
-  const nodes = (plan?.route?.nodes || [])
-    .filter(node => Number.isFinite(Number(node?.lat)) && Number.isFinite(Number(node?.lon)))
-    .map(node => ({
-      ident: node.ident || '',
-      name: node.name || null,
-      type: node.type || 'UKN',
-      lat: Number(node.lat),
-      lon: Number(node.lon),
-      altitudeFt: Number(node.alt || 0),
-      via: node.via || null
-    }))
+  const nodes = normalizeNodes(plan)
 
   if (nodes.length < 2) {
     throw new Error('The selected flight plan does not contain a usable route.')
@@ -202,6 +310,5 @@ export const fetchFlightPlan = async id => {
 
 export const estimateBlockMinutes = distanceNm => {
   const distance = Math.max(0, Number(distanceNm || 0))
-  // Rough block-time model: taxi + climb/descent overhead + cruise at ~465 kt.
   return Math.max(35, Math.round((distance / 465) * 60 + 35))
 }
