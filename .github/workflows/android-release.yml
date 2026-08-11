@@ -126,9 +126,43 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/flightsim-upload.jks"
-          test -s "$RUNNER_TEMP/flightsim-upload.jks"
+          python3 - <<'PY'
+          import base64
+          import os
+          import re
+          from pathlib import Path
+
+          raw = os.environ['ANDROID_KEYSTORE_BASE64']
+          # Mobile copy/paste can add whitespace or surrounding labels. JKS files
+          # start with FEEDFEED, whose base64 representation starts with /u3+7Q.
+          start = raw.find('/u3+7Q')
+          if start >= 0:
+              raw = raw[start:]
+          raw = ''.join(raw.split())
+          raw = re.sub(r'[^A-Za-z0-9+/=]', '', raw)
+          try:
+              decoded = base64.b64decode(raw, validate=True)
+          except Exception as exc:
+              raise SystemExit(f'ANDROID_KEYSTORE_BASE64 is not valid base64: {exc}')
+          if not decoded.startswith(bytes.fromhex('FEEDFEED')):
+              raise SystemExit('Decoded signing secret is not a JKS keystore')
+          path = Path(os.environ['RUNNER_TEMP']) / 'flightsim-upload.jks'
+          path.write_bytes(decoded)
+          if path.stat().st_size < 1000:
+              raise SystemExit('Decoded keystore is unexpectedly small')
+          print(f'Restored JKS keystore ({path.stat().st_size} bytes)')
+          PY
           chmod 600 "$RUNNER_TEMP/flightsim-upload.jks"
+
+      - name: Verify upload keystore
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          keytool -list \
+            -keystore "$RUNNER_TEMP/flightsim-upload.jks" \
+            -storetype JKS \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias flightsim-upload >/dev/null
 
       - name: Build unsigned release APK and AAB
         working-directory: android
