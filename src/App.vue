@@ -1,10 +1,7 @@
 <template>
   <div class="app-shell">
     <header class="topbar">
-      <div>
-        <p class="eyebrow">OFFLINE FLIGHT PROGRESS</p>
-        <h1>FlightSim</h1>
-      </div>
+      <div><p class="eyebrow">OFFLINE FLIGHT PROGRESS</p><h1>FlightSim</h1></div>
       <span class="network-pill" :class="{ offline: !isOnline }">{{ isOnline ? 'Online' : 'Offline' }}</span>
     </header>
 
@@ -14,88 +11,76 @@
           <div class="active-heading">
             <div>
               <span class="kicker">ACTIVE FLIGHT</span>
-              <h2>{{ activeTrip.flightNumber || `${activeTrip.fromICAO} → ${activeTrip.toICAO}` }}</h2>
-              <p>{{ activeTrip.fromICAO }} → {{ activeTrip.toICAO }}</p>
+              <h2>{{ activeTrip.flightNumber || routeLabel(activeTrip) }}</h2>
+              <p>{{ routeLabel(activeTrip) }}</p>
             </div>
             <strong>{{ Math.round(currentProgress * 100) }}%</strong>
           </div>
-
           <div class="progress-track"><div class="progress-fill" :style="{ width: `${currentProgress * 100}%` }"></div></div>
-
           <div v-if="flightState" class="metric-grid">
             <div><span>Phase</span><strong>{{ flightState.phase }}</strong></div>
             <div><span>Remaining</span><strong>{{ nmToKm(flightState.remainingNm) }} km</strong></div>
             <div><span>Altitude</span><strong>{{ ftToM(flightState.altitudeFt).toLocaleString() }} m</strong></div>
             <div><span>Time left</span><strong>{{ remainingTime }}</strong></div>
           </div>
-
-          <p v-if="activeTrip.gpsCorrection" class="gps-note">
-            GPS corrected · {{ nmToKm(activeTrip.gpsCorrection.routeDistanceNm) }} km from route · accuracy {{ Math.round(activeTrip.gpsCorrection.accuracyMeters) }} m
-          </p>
-
+          <p v-if="activeTrip.gpsCorrection" class="gps-note">GPS corrected · {{ nmToKm(activeTrip.gpsCorrection.routeDistanceNm) }} km from route · accuracy {{ Math.round(activeTrip.gpsCorrection.accuracyMeters) }} m</p>
           <div class="button-row">
             <button class="btn secondary" :disabled="gpsBusy" @click="correctWithGps">{{ gpsBusy ? 'Reading GPS…' : 'Correct with GPS' }}</button>
             <button class="btn danger" @click="stopActiveFlight">Stop</button>
           </div>
         </div>
 
-        <div class="section-head">
-          <div>
-            <span class="kicker">BEFORE TAKEOFF</span>
-            <h2>Find a route</h2>
-          </div>
-        </div>
-
+        <div class="section-head"><div><span class="kicker">BEFORE TAKEOFF</span><h2>Find a route</h2></div></div>
         <div class="form-grid">
-          <label>
-            <span>Flight number</span>
-            <input v-model="flightNumber" autocomplete="off" placeholder="e.g. LH717" @keyup.enter="search" />
-          </label>
+          <label><span>Flight number</span><input v-model="flightNumber" autocomplete="off" placeholder="e.g. SM2968" @keyup.enter="search" /></label>
           <div class="route-inputs">
-            <label><span>From</span><input v-model="from" autocomplete="off" placeholder="FRA / Frankfurt" /></label>
-            <label><span>To</span><input v-model="to" autocomplete="off" placeholder="HND / Tokyo" /></label>
+            <label><span>From</span><input v-model="from" autocomplete="off" placeholder="HRG" /></label>
+            <label><span>To</span><input v-model="to" autocomplete="off" placeholder="PAD" /></label>
           </div>
-          <button class="btn primary" :disabled="searching || !isOnline" @click="search">
-            {{ searching ? 'Searching…' : 'Search flight plans' }}
-          </button>
+          <button class="btn primary" :disabled="searching || !isOnline" @click="search">{{ searching ? 'Comparing routes…' : 'Search flight plans' }}</button>
         </div>
-
         <p v-if="message" class="message" :class="{ error: messageIsError }">{{ message }}</p>
 
         <div v-if="results.length" class="results">
-          <button v-for="plan in results" :key="plan.id" class="result-card" :class="{ selected: selectedPlan?.id === plan.id }" @click="choosePlan(plan)">
-            <div>
-              <strong>{{ plan.flightNumber || `${plan.fromICAO} → ${plan.toICAO}` }}</strong>
-              <span>{{ plan.fromICAO }} → {{ plan.toICAO }}</span>
+          <button v-for="plan in results" :key="plan.id" class="result-card" :class="{ selected: selectedPlan?.id === plan.id, recommended: plan.recommendationRank === 1 }" @click="choosePlan(plan)">
+            <div class="result-main">
+              <div class="result-title-row">
+                <strong>{{ plan.flightNumber || routeLabel(plan) }}</strong>
+                <span v-if="plan.recommendationRank === 1" class="recommended-badge">Recommended</span>
+                <span v-else class="rank-badge">#{{ plan.recommendationRank }}</span>
+              </div>
+              <span class="iata-route">{{ routeLabel(plan) }}</span>
+              <span v-if="plan.fromIATA || plan.toIATA" class="icao-route">{{ plan.fromICAO }} → {{ plan.toICAO }}</span>
+              <span v-if="plan.viaSummary" class="via">via {{ plan.viaSummary }}</span>
+              <span class="weather" :class="{ tailwind: Number(plan.upperWindKmh) >= 10, headwind: Number(plan.upperWindKmh) <= -10 }">{{ plan.weatherLabel }}</span>
             </div>
             <div class="result-meta">
-              <span>{{ nmToKm(plan.distanceNm) }} km</span>
+              <strong>{{ nmToKm(plan.distanceNm) }} km</strong>
               <span>{{ plan.waypoints }} pts</span>
+              <span v-if="plan.tags?.length">{{ plan.tags.slice(0, 2).join(' · ') }}</span>
             </div>
           </button>
+          <p class="ranking-note">Recommended combines route quality, recency, efficiency and current upper-level winds. Weather is advisory only.</p>
         </div>
 
         <div v-if="selectedPlan" class="selected-plan">
           <div>
             <span class="kicker">SELECTED ROUTE</span>
             <h3>{{ selectedPlan.fromName }} → {{ selectedPlan.toName }}</h3>
-            <p>{{ selectedPlan.fromICAO }} → {{ selectedPlan.toICAO }} · {{ nmToKm(selectedPlan.distanceNm) }} km</p>
+            <p><strong>{{ routeLabel(selectedPlan) }}</strong> · {{ nmToKm(selectedPlan.distanceNm) }} km<span v-if="selectedPlan.viaSummary"> · via {{ selectedPlan.viaSummary }}</span></p>
+            <p class="weather-line">{{ selectedPlan.weatherLabel }}</p>
           </div>
-          <label>
-            <span>Expected block time (minutes)</span>
-            <input v-model.number="blockMinutes" type="number" min="20" max="1500" inputmode="numeric" />
-          </label>
-          <button class="btn success" :disabled="saving || !isOnline" @click="saveSelectedPlan">
-            {{ saving ? 'Downloading route…' : 'Save route for offline use' }}
-          </button>
+          <label><span>Expected block time (minutes)</span><input v-model.number="blockMinutes" type="number" min="20" max="1500" inputmode="numeric" /></label>
+          <button class="btn success" :disabled="saving || !isOnline" @click="saveSelectedPlan">{{ saving ? 'Downloading route…' : 'Save route for offline use' }}</button>
         </div>
 
         <div v-if="savedTrips.length" class="saved-section">
           <div class="section-head compact"><div><span class="kicker">ON DEVICE</span><h2>Saved flights</h2></div></div>
           <article v-for="trip in savedTrips" :key="trip.id" class="saved-card">
             <div>
-              <strong>{{ trip.flightNumber || `${trip.fromICAO} → ${trip.toICAO}` }}</strong>
-              <span>{{ trip.fromICAO }} → {{ trip.toICAO }} · {{ nmToKm(trip.distanceNm) }} km · {{ formatDuration(trip.blockMinutes) }}</span>
+              <strong>{{ trip.flightNumber || routeLabel(trip) }}</strong>
+              <span>{{ routeLabel(trip) }} · {{ nmToKm(trip.distanceNm) }} km · {{ formatDuration(trip.blockMinutes) }}</span>
+              <span v-if="trip.weatherLabel" class="saved-weather">{{ trip.weatherLabel }}</span>
             </div>
             <div class="saved-actions">
               <button v-if="trip.status !== 'active'" class="btn small primary" @click="startSavedFlight(trip)">Takeoff now</button>
@@ -104,9 +89,7 @@
           </article>
         </div>
 
-        <p class="attribution">
-          Route data from <a href="https://flightplandatabase.com" target="_blank" rel="noopener">Flight Plan Database</a>. Simulation use only — not suitable for real-world aviation or navigation.
-        </p>
+        <p class="attribution">Route data from <a href="https://flightplandatabase.com" target="_blank" rel="noopener">Flight Plan Database</a>. Upper-wind context from Open‑Meteo. Simulation use only — not suitable for real-world aviation or navigation.</p>
       </section>
 
       <section class="globe-panel">
@@ -116,10 +99,7 @@
           <span>{{ Math.round(flightState.speedKt * 1.852) }} km/h · hdg {{ Math.round(flightState.bearing || 0) }}°</span>
           <span v-if="flightState.nextIdent">next {{ flightState.nextIdent }}</span>
         </div>
-        <div v-else class="globe-empty">
-          <strong>Route globe</strong>
-          <span>Save a route online, then start it at takeoff.</span>
-        </div>
+        <div v-else class="globe-empty"><strong>Route globe</strong><span>Drag to rotate · pinch to zoom</span></div>
       </section>
     </main>
   </div>
@@ -151,37 +131,23 @@ let globe
 
 const nmToKm = value => Math.round(Number(value || 0) * 1.852)
 const ftToM = value => Math.round(Number(value || 0) * 0.3048)
-
+const routeLabel = item => `${item?.fromIATA || item?.fromICAO || '?'} → ${item?.toIATA || item?.toICAO || '?'}`
 const savedTrips = computed(() => flightStore.savedTrips)
 const activeTrip = computed(() => flightStore.activeTrip)
-
 const timeProgress = computed(() => {
   const trip = activeTrip.value
   if (!trip?.startedAt || !trip.blockMinutes) return 0
   return Math.min(1, Math.max(0, (now.value - trip.startedAt) / (trip.blockMinutes * 60_000)))
 })
-
 const currentProgress = computed(() => Math.min(1, Math.max(0, timeProgress.value + Number(activeTrip.value?.progressOffset || 0))))
-
 const flightState = computed(() => {
   const trip = activeTrip.value
   if (!trip?.route) return null
-  return getFlightState({
-    route: trip.route,
-    progress: currentProgress.value,
-    cruiseAltitudeFt: trip.maxAltitudeFt || 36000
-  })
+  return getFlightState({ route: trip.route, progress: currentProgress.value, cruiseAltitudeFt: trip.maxAltitudeFt || 36000 })
 })
+const remainingTime = computed(() => activeTrip.value ? formatDuration(activeTrip.value.blockMinutes * (1 - currentProgress.value)) : '—')
 
-const remainingTime = computed(() => {
-  if (!activeTrip.value) return '—'
-  return formatDuration(activeTrip.value.blockMinutes * (1 - currentProgress.value))
-})
-
-const setMessage = (text, error = false) => {
-  message.value = text
-  messageIsError.value = error
-}
+const setMessage = (text, error = false) => { message.value = text; messageIsError.value = error }
 
 const search = async () => {
   if (!isOnline.value) return setMessage('You are offline. Use one of the saved flights below.', true)
@@ -194,34 +160,31 @@ const search = async () => {
     if (!results.value.length) setMessage('No matching plans found. Try adding departure and destination.', true)
   } catch (error) {
     setMessage(error.message || 'Flight-plan search failed.', true)
-  } finally {
-    searching.value = false
-  }
+  } finally { searching.value = false }
 }
 
-const choosePlan = plan => {
-  selectedPlan.value = plan
-  blockMinutes.value = estimateBlockMinutes(plan.distanceNm)
-}
+const choosePlan = plan => { selectedPlan.value = plan; blockMinutes.value = estimateBlockMinutes(plan.distanceNm) }
 
 const saveSelectedPlan = async () => {
   if (!selectedPlan.value) return
   saving.value = true
   setMessage('')
   try {
-    const fullPlan = await fetchFlightPlan(selectedPlan.value.id)
-    const trip = await flightStore.savePlanForOffline({
-      plan: fullPlan,
-      requestedFlightNumber: normalizeFlightNumber(flightNumber.value),
-      blockMinutes: blockMinutes.value || estimateBlockMinutes(fullPlan.distanceNm)
-    })
+    const fetched = await fetchFlightPlan(selectedPlan.value.id)
+    const fullPlan = {
+      ...fetched,
+      fromIATA: selectedPlan.value.fromIATA || '',
+      toIATA: selectedPlan.value.toIATA || '',
+      weatherLabel: selectedPlan.value.weatherLabel || '',
+      upperWindKmh: selectedPlan.value.upperWindKmh ?? null,
+      viaSummary: selectedPlan.value.viaSummary || ''
+    }
+    const trip = await flightStore.savePlanForOffline({ plan: fullPlan, requestedFlightNumber: normalizeFlightNumber(flightNumber.value), blockMinutes: blockMinutes.value || estimateBlockMinutes(fullPlan.distanceNm) })
     setRouteOnGlobe(trip.route.nodes)
     setMessage('Route downloaded and stored on this device. You can now go offline.')
   } catch (error) {
     setMessage(error.message || 'Could not save this route.', true)
-  } finally {
-    saving.value = false
-  }
+  } finally { saving.value = false }
 }
 
 const startSavedFlight = async trip => {
@@ -230,54 +193,33 @@ const startSavedFlight = async trip => {
     setRouteOnGlobe(active.route.nodes)
     now.value = Date.now()
     setMessage('Flight started. Progress is now estimated from elapsed time and the cached route.')
-  } catch (error) {
-    setMessage(error.message || 'Could not start this flight.', true)
-  }
+  } catch (error) { setMessage(error.message || 'Could not start this flight.', true) }
 }
-
-const stopActiveFlight = async () => {
-  if (!activeTrip.value) return
-  await flightStore.stopTrip(activeTrip.value.id)
-}
-
-const removeTrip = async trip => {
-  if (trip.status === 'active') await flightStore.stopTrip(trip.id)
-  await flightStore.deleteTrip(trip.id)
-}
+const stopActiveFlight = async () => { if (activeTrip.value) await flightStore.stopTrip(activeTrip.value.id) }
+const removeTrip = async trip => { if (trip.status === 'active') await flightStore.stopTrip(trip.id); await flightStore.deleteTrip(trip.id) }
 
 const correctWithGps = async () => {
   const trip = activeTrip.value
   if (!trip || !navigator.geolocation) return setMessage('GPS is not available on this device.', true)
   gpsBusy.value = true
   setMessage('')
-
   navigator.geolocation.getCurrentPosition(async position => {
     try {
       const nearest = nearestProgressOnRoute(trip.route, position.coords.latitude, position.coords.longitude)
-      if (nearest.distanceNm > 120) {
-        throw new Error(`GPS fix is about ${nmToKm(nearest.distanceNm)} km from the route, so it was not applied.`)
-      }
-      const progressOffset = nearest.progress - timeProgress.value
+      if (nearest.distanceNm > 120) throw new Error(`GPS fix is about ${nmToKm(nearest.distanceNm)} km from the route, so it was not applied.`)
       await flightStore.applyGpsCorrection(trip.id, {
-        progressOffset,
+        progressOffset: nearest.progress - timeProgress.value,
         position: { lat: position.coords.latitude, lon: position.coords.longitude },
         accuracyMeters: position.coords.accuracy,
         routeDistanceNm: nearest.distanceNm
       })
       setMessage(`GPS correction applied at ${Math.round(nearest.progress * 100)}% route progress.`)
-    } catch (error) {
-      setMessage(error.message || 'GPS correction failed.', true)
-    } finally {
-      gpsBusy.value = false
-    }
-  }, error => {
-    gpsBusy.value = false
-    setMessage(`GPS unavailable: ${error.message}`, true)
-  }, { enableHighAccuracy: true, timeout: 15_000, maximumAge: 60_000 })
+    } catch (error) { setMessage(error.message || 'GPS correction failed.', true) }
+    finally { gpsBusy.value = false }
+  }, error => { gpsBusy.value = false; setMessage(`GPS unavailable: ${error.message}`, true) }, { enableHighAccuracy: true, timeout: 15_000, maximumAge: 60_000 })
 }
 
 const handleOnline = () => { isOnline.value = navigator.onLine }
-
 onMounted(async () => {
   globe = initializeGlobe('globe-canvas')
   await flightStore.refreshTrips()
@@ -286,15 +228,8 @@ onMounted(async () => {
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOnline)
 })
-
-watch(flightState, state => {
-  if (state && globe) updateAircraftPosition(state.lat, state.lon, state.altitudeFt, state.bearing)
-}, { immediate: true })
-
-watch(activeTrip, trip => {
-  if (trip?.route?.nodes) setRouteOnGlobe(trip.route.nodes)
-})
-
+watch(flightState, state => { if (state && globe) updateAircraftPosition(state.lat, state.lon, state.altitudeFt, state.bearing) }, { immediate: true })
+watch(activeTrip, trip => { if (trip?.route?.nodes) setRouteOnGlobe(trip.route.nodes) })
 onBeforeUnmount(() => {
   clearInterval(timer)
   window.removeEventListener('online', handleOnline)
@@ -304,81 +239,47 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-:global(body) { color: #eaf2f8; }
-* { box-sizing: border-box; }
-.app-shell { min-height: 100%; background: radial-gradient(circle at 80% 0%, #173b58 0, #091622 34%, #050b12 80%); }
-.topbar { height: 76px; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.08); background: rgba(4,10,16,.72); backdrop-filter: blur(14px); }
-.topbar h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
-.eyebrow, .kicker { color: #71d4ac; font-size: 10px; font-weight: 800; letter-spacing: .16em; }
-.eyebrow { margin: 0 0 3px; }
-.network-pill { font-size: 12px; padding: 6px 10px; border-radius: 999px; color: #74e2b2; background: rgba(56,183,128,.13); border: 1px solid rgba(74,224,165,.25); }
-.network-pill.offline { color: #ffcb70; background: rgba(255,171,64,.12); border-color: rgba(255,185,78,.25); }
-.layout { height: calc(100vh - 76px); padding: 14px; display: grid; grid-template-columns: minmax(320px, 390px) minmax(0, 1fr); gap: 14px; }
-.panel, .globe-panel { border: 1px solid rgba(255,255,255,.08); background: rgba(10,22,32,.82); border-radius: 18px; box-shadow: 0 18px 50px rgba(0,0,0,.25); }
-.controls { overflow-y: auto; padding: 18px; }
-.globe-panel { position: relative; overflow: hidden; min-height: 360px; }
-#globe-canvas { width: 100%; height: 100%; display: block; }
-.section-head { display: flex; justify-content: space-between; align-items: center; margin: 18px 0 12px; }
-.section-head.compact { margin-top: 28px; }
-.section-head h2, .active-card h2 { margin: 2px 0 0; font-size: 20px; }
-.form-grid { display: grid; gap: 10px; }
-.route-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-label { display: grid; gap: 6px; }
-label span { color: #91a6b5; font-size: 11px; font-weight: 700; }
-input { width: 100%; border: 1px solid rgba(255,255,255,.12); background: #0a1722; color: #f3f8fb; padding: 11px 12px; border-radius: 10px; font-size: 14px; }
-input:focus { border-color: #4bc494; box-shadow: 0 0 0 3px rgba(75,196,148,.12); }
-.btn { border: 0; border-radius: 10px; padding: 11px 13px; color: #f8fbfd; font-weight: 800; cursor: pointer; }
-.btn:disabled { opacity: .48; cursor: default; }
-.btn.primary { background: #2475a8; }
-.btn.success { background: #24936b; }
-.btn.secondary { background: #263d4e; }
-.btn.danger { background: #8b3b4d; }
-.btn.small { padding: 8px 10px; font-size: 12px; }
-.button-row { display: flex; gap: 8px; margin-top: 13px; }
-.button-row .btn { flex: 1; }
-.message { margin: 10px 0 0; padding: 9px 10px; border-radius: 9px; background: rgba(63,167,123,.12); color: #a9efcb; font-size: 12px; line-height: 1.4; }
-.message.error { background: rgba(196,71,89,.12); color: #ffabb7; }
-.results { display: grid; gap: 7px; margin-top: 13px; }
-.result-card { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; color: inherit; border: 1px solid rgba(255,255,255,.08); border-radius: 11px; padding: 11px; background: #0b1823; cursor: pointer; }
-.result-card.selected { border-color: #52c99a; background: rgba(42,145,106,.14); }
-.result-card strong, .saved-card strong { display: block; font-size: 14px; }
-.result-card span, .saved-card span { color: #8ea4b3; font-size: 11px; }
-.result-meta { text-align: right; display: grid; white-space: nowrap; }
-.selected-plan { margin-top: 13px; border-radius: 13px; padding: 14px; background: rgba(43,117,161,.13); border: 1px solid rgba(70,149,196,.2); display: grid; gap: 12px; }
-.selected-plan h3 { margin: 3px 0; font-size: 15px; }
-.selected-plan p { margin: 0; color: #9eb0bc; font-size: 12px; }
-.active-card { padding: 14px; border-radius: 14px; background: linear-gradient(145deg, rgba(30,117,89,.25), rgba(28,77,112,.18)); border: 1px solid rgba(73,210,158,.25); }
-.active-heading { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
-.active-heading p { margin: 3px 0 0; color: #a9bbc6; font-size: 12px; }
-.active-heading > strong { font-size: 26px; color: #71d4ac; }
-.progress-track { height: 5px; border-radius: 999px; background: rgba(255,255,255,.09); overflow: hidden; margin: 14px 0; }
-.progress-fill { height: 100%; background: #63dba7; transition: width 1s linear; }
-.metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.metric-grid div { padding: 9px; border-radius: 9px; background: rgba(0,0,0,.17); }
-.metric-grid span { display: block; color: #8ea4b3; font-size: 10px; }
-.metric-grid strong { font-size: 13px; }
-.gps-note { font-size: 10px; color: #9fc4d8; margin: 10px 0 0; }
-.saved-section { margin-top: 4px; }
-.saved-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
-.saved-actions { display: flex; align-items: center; gap: 5px; }
-.icon-btn { width: 31px; height: 31px; border-radius: 8px; border: 0; color: #a9bbc7; background: #172733; font-size: 19px; }
-.attribution { margin: 24px 0 3px; color: #657b89; font-size: 10px; line-height: 1.45; }
-.attribution a { color: #7da9c2; }
-.hud { position: absolute; left: 16px; bottom: 16px; display: grid; gap: 3px; padding: 11px 13px; border-radius: 10px; background: rgba(4,12,19,.78); border: 1px solid rgba(93,220,168,.22); backdrop-filter: blur(8px); }
-.hud strong { color: #78e3b5; font-size: 14px; }
-.hud span { color: #9cb1bf; font-size: 11px; }
-.globe-empty { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); display: grid; text-align: center; width: min(280px, 80%); color: #95aab7; }
-.globe-empty strong { color: #d5e2e9; font-size: 13px; }
-.globe-empty span { font-size: 11px; margin-top: 3px; }
-@media (max-width: 820px) {
-  .layout { height: auto; min-height: calc(100vh - 76px); grid-template-columns: 1fr; padding: 10px; }
-  .controls { order: 2; overflow: visible; }
-  .globe-panel { order: 1; height: 42vh; min-height: 300px; }
-  .topbar { height: 68px; }
-}
-@media (max-width: 420px) {
-  .route-inputs { grid-template-columns: 1fr; }
-  .metric-grid { grid-template-columns: 1fr 1fr; }
-  .controls { padding: 14px; }
-}
+:global(body) { color:#eaf2f8; }
+* { box-sizing:border-box; }
+.app-shell { min-height:100%; background:radial-gradient(circle at 80% 0%,#173b58 0,#091622 34%,#050b12 80%); }
+.topbar { height:76px; padding:14px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,.08); background:rgba(4,10,16,.72); backdrop-filter:blur(14px); }
+.topbar h1 { margin:0; font-size:24px; }
+.eyebrow,.kicker { color:#71d4ac; font-size:10px; font-weight:800; letter-spacing:.16em; }
+.eyebrow { margin:0 0 3px; }
+.network-pill { font-size:12px; padding:6px 10px; border-radius:999px; color:#74e2b2; background:rgba(56,183,128,.13); border:1px solid rgba(74,224,165,.25); }
+.network-pill.offline { color:#ffcb70; background:rgba(255,171,64,.12); }
+.layout { height:calc(100vh - 76px); padding:14px; display:grid; grid-template-columns:minmax(320px,390px) minmax(0,1fr); gap:14px; }
+.panel,.globe-panel { border:1px solid rgba(255,255,255,.08); background:rgba(10,22,32,.82); border-radius:18px; box-shadow:0 18px 50px rgba(0,0,0,.25); }
+.controls { overflow-y:auto; padding:18px; }
+.globe-panel { position:relative; overflow:hidden; min-height:360px; }
+#globe-canvas { width:100%; height:100%; display:block; }
+.section-head { display:flex; justify-content:space-between; align-items:center; margin:18px 0 12px; }
+.section-head.compact { margin-top:28px; }
+.section-head h2,.active-card h2 { margin:2px 0 0; font-size:20px; }
+.form-grid { display:grid; gap:10px; }
+.route-inputs { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+label { display:grid; gap:6px; }
+label span { color:#91a6b5; font-size:11px; font-weight:700; }
+input { width:100%; border:1px solid rgba(255,255,255,.12); background:#0a1722; color:#f3f8fb; padding:11px 12px; border-radius:10px; font-size:14px; }
+.btn { border:0; border-radius:10px; padding:11px 13px; color:#f8fbfd; font-weight:800; cursor:pointer; }
+.btn:disabled { opacity:.48; }
+.btn.primary { background:#2475a8; }.btn.success{background:#24936b}.btn.secondary{background:#263d4e}.btn.danger{background:#8b3b4d}.btn.small{padding:8px 10px;font-size:12px}
+.button-row { display:flex; gap:8px; margin-top:13px; }.button-row .btn{flex:1}
+.message { margin:10px 0 0; padding:9px 10px; border-radius:9px; background:rgba(63,167,123,.12); color:#a9efcb; font-size:12px; }.message.error{background:rgba(196,71,89,.12);color:#ffabb7}
+.results { display:grid; gap:8px; margin-top:13px; }
+.result-card { width:100%; display:flex; justify-content:space-between; gap:10px; text-align:left; color:inherit; border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:12px; background:#0b1823; }
+.result-card.selected { border-color:#52c99a; background:rgba(42,145,106,.14); }.result-card.recommended{border-color:rgba(99,219,167,.45)}
+.result-main { display:grid; gap:3px; min-width:0; }.result-title-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.result-title-row strong{font-size:14px}
+.recommended-badge,.rank-badge { border-radius:999px; padding:2px 6px; font-size:9px; font-weight:800; }.recommended-badge{color:#9bf0ca;background:rgba(45,166,117,.18)}.rank-badge{color:#9db0bd;background:#172733}
+.iata-route { color:#dce9ef!important; font-size:13px!important; font-weight:800; }.icao-route,.via{color:#708896!important;font-size:10px!important}.weather{color:#a7c9dc!important;font-size:10px!important}.weather.tailwind{color:#78ddb2!important}.weather.headwind{color:#ffbd83!important}
+.result-meta { text-align:right; display:grid; align-content:start; white-space:nowrap; gap:2px; }.result-meta strong{font-size:12px}.result-meta span{color:#8ea4b3;font-size:10px}
+.ranking-note { margin:2px 3px 0; color:#697f8d; font-size:9px; line-height:1.4; }
+.selected-plan { margin-top:13px; border-radius:13px; padding:14px; background:rgba(43,117,161,.13); border:1px solid rgba(70,149,196,.2); display:grid; gap:12px; }.selected-plan h3{margin:3px 0;font-size:15px}.selected-plan p{margin:0;color:#9eb0bc;font-size:12px}.weather-line{color:#83cbb0!important;margin-top:4px!important}
+.active-card { padding:14px; border-radius:14px; background:linear-gradient(145deg,rgba(30,117,89,.25),rgba(28,77,112,.18)); border:1px solid rgba(73,210,158,.25); }.active-heading{display:flex;justify-content:space-between;gap:10px}.active-heading p{margin:3px 0 0;color:#a9bbc6;font-size:12px}.active-heading>strong{font-size:26px;color:#71d4ac}
+.progress-track{height:5px;border-radius:999px;background:rgba(255,255,255,.09);overflow:hidden;margin:14px 0}.progress-fill{height:100%;background:#63dba7;transition:width 1s linear}.metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric-grid div{padding:9px;border-radius:9px;background:rgba(0,0,0,.17)}.metric-grid span{display:block;color:#8ea4b3;font-size:10px}.metric-grid strong{font-size:13px}.gps-note{font-size:10px;color:#9fc4d8;margin:10px 0 0}
+.saved-card{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.06)}.saved-card strong{display:block;font-size:14px}.saved-card span{display:block;color:#8ea4b3;font-size:11px}.saved-weather{font-size:9px!important;color:#78bfa4!important;margin-top:2px}.saved-actions{display:flex;align-items:center;gap:5px}.icon-btn{width:31px;height:31px;border-radius:8px;border:0;color:#a9bbc7;background:#172733;font-size:19px}
+.attribution{margin:24px 0 3px;color:#657b89;font-size:10px;line-height:1.45}.attribution a{color:#7da9c2}
+.hud{position:absolute;left:16px;bottom:16px;display:grid;gap:3px;padding:11px 13px;border-radius:10px;background:rgba(4,12,19,.78);border:1px solid rgba(93,220,168,.22)}.hud strong{color:#78e3b5;font-size:14px}.hud span{color:#9cb1bf;font-size:11px}.globe-empty{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:grid;text-align:center;color:#95aab7}.globe-empty strong{color:#d5e2e9;font-size:13px}.globe-empty span{font-size:11px;margin-top:3px}
+@media(max-width:820px){.layout{height:auto;min-height:calc(100vh - 76px);grid-template-columns:1fr;padding:10px}.controls{order:2;overflow:visible}.globe-panel{order:1;height:42vh;min-height:300px}.topbar{height:68px}}
+@media(max-width:420px){.route-inputs{grid-template-columns:1fr}.controls{padding:14px}.result-card{align-items:flex-start}.result-meta{min-width:74px}}
 </style>
