@@ -6,6 +6,8 @@ const RADIUS = 2
 const MIN_CAMERA_Z = 2.55
 const MAX_CAMERA_Z = 8.5
 const DEFAULT_CAMERA_Z = 5.8
+const AIRCRAFT_MIN_SCALE = 0.045
+const AIRCRAFT_MAX_SCALE = 0.16
 const COUNTRY_COLLECTION = feature(countries50m, countries50m.objects.countries)
 
 const FEATURED_COUNTRIES = new Set([
@@ -419,10 +421,21 @@ const buildTagTexture = (text, accent) => {
 const createAircraftMarker = () => {
   const material = new THREE.SpriteMaterial({ map: buildPlaneTexture(), transparent: true, depthTest: false, depthWrite: false })
   const sprite = new THREE.Sprite(material)
-  sprite.scale.set(0.31, 0.31, 1)
+  sprite.scale.set(AIRCRAFT_MAX_SCALE, AIRCRAFT_MAX_SCALE, 1)
   sprite.visible = false
   sprite.renderOrder = 20
   return sprite
+}
+
+const updateAircraftScale = () => {
+  if (!aircraft?.visible || !camera) return
+  const worldPosition = new THREE.Vector3()
+  aircraft.getWorldPosition(worldPosition)
+  const distance = camera.position.distanceTo(worldPosition)
+  // Keep the marker readable from the full-route view, but make it shrink hard as
+  // the camera approaches the globe so it never hides countries/cities at close zoom.
+  const scale = THREE.MathUtils.clamp(distance * 0.043, AIRCRAFT_MIN_SCALE, AIRCRAFT_MAX_SCALE)
+  aircraft.scale.set(scale, scale, 1)
 }
 
 const createRouteMarker = (node, label, accentHex, accentCss) => {
@@ -597,6 +610,7 @@ export const initializeGlobe = canvasId => {
   const animate = () => {
     animationFrame = requestAnimationFrame(animate)
     updateAircraftScreenRotation()
+    updateAircraftScale()
     updateMapLabels()
     renderer.render(scene, camera)
   }
