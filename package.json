@@ -18,7 +18,7 @@
     "@capacitor/local-notifications": "^8.0.0",
     "@capacitor/share": "^8.0.0",
     "dexie": "^3.2.4",
-    "maplibre-gl": "^5.18.0",
+    "leaflet": "^1.9.4",
     "pinia": "^2.1.0",
     "three": "0.128.0",
     "topojson-client": "^3.1.0",
