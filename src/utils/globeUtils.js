@@ -379,17 +379,17 @@ const buildCityLightTexture = () => {
   canvas.width = 96
   canvas.height = 96
   const context = canvas.getContext('2d')
-  const glow = context.createRadialGradient(48, 48, 1, 48, 48, 38)
-  glow.addColorStop(0, 'rgba(255,245,190,1)')
-  glow.addColorStop(0.13, 'rgba(255,211,96,.95)')
-  glow.addColorStop(0.42, 'rgba(255,171,55,.38)')
+  const glow = context.createRadialGradient(48, 48, 1, 48, 48, 30)
+  glow.addColorStop(0, 'rgba(255,244,190,.72)')
+  glow.addColorStop(0.16, 'rgba(255,211,110,.48)')
+  glow.addColorStop(0.48, 'rgba(255,175,70,.16)')
   glow.addColorStop(1, 'rgba(255,145,25,0)')
   context.fillStyle = glow
   context.fillRect(0, 0, 96, 96)
-  ;[[35,43,3.2],[57,34,2.3],[61,58,2.5],[40,61,1.9],[49,49,3.5]].forEach(([x,y,r]) => {
+  ;[[41,45,1.8],[55,40,1.4],[50,54,1.7]].forEach(([x,y,r]) => {
     context.beginPath()
     context.arc(x, y, r, 0, Math.PI * 2)
-    context.fillStyle = 'rgba(255,248,205,.95)'
+    context.fillStyle = 'rgba(255,246,205,.72)'
     context.fill()
   })
   const texture = new THREE.CanvasTexture(canvas)
@@ -450,14 +450,14 @@ const createCityLights = () => {
       blending: THREE.AdditiveBlending
     })
     const sprite = new THREE.Sprite(material)
-    sprite.position.copy(normal.clone().multiplyScalar(RADIUS + 0.045))
-    sprite.scale.set(0.075, 0.075, 1)
+    sprite.position.copy(normal.clone().multiplyScalar(RADIUS + 0.038))
+    sprite.scale.set(0.052, 0.052, 1)
     sprite.renderOrder = 9
     sprite.visible = false
     sprite.userData.name = name
     sprite.userData.normal = normal
     sprite.userData.phase = index * 1.731
-    sprite.userData.baseScale = 0.075
+    sprite.userData.baseScale = 0.052
     earthGroup.add(sprite)
     cityLights.push(sprite)
   })
@@ -492,7 +492,7 @@ const updateCityLights = timestamp => {
   const worldPosition = new THREE.Vector3()
   const toCamera = new THREE.Vector3()
   cityLights.forEach(light => {
-    if (camera.position.z > 6.4) {
+    if (camera.position.z > 6.1) {
       light.visible = false
       return
     }
@@ -500,15 +500,15 @@ const updateCityLights = timestamp => {
     toCamera.copy(camera.position).sub(worldPosition).normalize()
     const facing = worldPosition.clone().normalize().dot(toCamera) > 0.025
     const daylight = light.userData.normal.dot(sunDirectionLocal)
-    const night = THREE.MathUtils.clamp((-daylight + 0.04) / 0.55, 0, 1)
-    light.visible = facing && night > 0.06
+    const night = THREE.MathUtils.clamp((-daylight - 0.02) / 0.58, 0, 1)
+    light.visible = facing && night > 0.16
     if (!light.visible) return
-    const twinkle = 0.78 + 0.22 * Math.pow(Math.sin(timestamp * 0.004 + light.userData.phase), 2)
+    const twinkle = 0.92 + 0.08 * Math.pow(Math.sin(timestamp * 0.0026 + light.userData.phase), 2)
     const distance = camera.position.distanceTo(worldPosition)
     const zoomScale = THREE.MathUtils.clamp(distance / 3.5, 0.3, 1)
-    const scale = light.userData.baseScale * zoomScale * (0.94 + 0.08 * twinkle)
+    const scale = light.userData.baseScale * zoomScale * (0.98 + 0.03 * twinkle)
     light.scale.set(scale, scale, 1)
-    light.material.opacity = night * twinkle * 0.95
+    light.material.opacity = night * twinkle * 0.48
   })
 }
 
