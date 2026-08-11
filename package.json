@@ -4,7 +4,9 @@
   "description": "Offline flight progress tracker using cached flight-plan routes",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/generate-populated-places.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/generate-populated-places.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
