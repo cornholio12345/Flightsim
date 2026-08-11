@@ -59,7 +59,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'three': ['three'],
-          'maplibre': ['maplibre-gl']
+          'leaflet': ['leaflet']
         }
       }
     }
