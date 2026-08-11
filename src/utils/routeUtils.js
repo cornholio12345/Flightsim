@@ -93,6 +93,7 @@ export const getFlightState = ({ route, progress, cruiseAltitudeFt = 36000, crui
   const prepared = route?.nodes ? route : prepareRoute(route)
   const p = clamp(Number(progress || 0), 0, 1)
   const position = positionAtProgress(prepared, p)
+  const takeoffEnd = 0.01
   const climbEnd = 0.12
   const descentStart = 0.86
   const cruiseAltitude = clamp(Number(cruiseAltitudeFt || 36000), 18000, 43000)
@@ -102,10 +103,15 @@ export const getFlightState = ({ route, progress, cruiseAltitudeFt = 36000, crui
   let altitudeFt = cruiseAltitude
   let speedKt = cruiseSpeed
 
-  if (p < climbEnd) {
-    const f = p / climbEnd
-    phase = f < 0.08 ? 'Takeoff' : 'Climb'
-    altitudeFt = cruiseAltitude * Math.sin((f * Math.PI) / 2)
+  if (p < takeoffEnd) {
+    const f = p / takeoffEnd
+    phase = 'Takeoff'
+    altitudeFt = 1500 * Math.pow(f, 1.8)
+    speedKt = 170 * Math.min(1, f * 1.15)
+  } else if (p < climbEnd) {
+    const f = (p - takeoffEnd) / (climbEnd - takeoffEnd)
+    phase = 'Climb'
+    altitudeFt = 1500 + (cruiseAltitude - 1500) * Math.sin((f * Math.PI) / 2)
     speedKt = 170 + (cruiseSpeed - 170) * f
   } else if (p > descentStart) {
     const f = (p - descentStart) / (1 - descentStart)
@@ -128,8 +134,6 @@ export const nearestProgressOnRoute = (preparedRoute, lat, lon) => {
   const route = preparedRoute?.nodes ? preparedRoute : prepareRoute(preparedRoute)
   let best = { progress: 0, distanceNm: Infinity }
 
-  // Sampling each leg is robust enough for a GPS correction while keeping the
-  // implementation small and predictable offline.
   route.nodes.slice(0, -1).forEach((start, index) => {
     const end = route.nodes[index + 1]
     const segmentStartNm = start.distanceFromStartNm
