@@ -164,27 +164,42 @@ const planeElement = () => {
   return element
 }
 
-export const initializeDetailMap = containerId => {
+export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
   if (map) return map
   const container = document.getElementById(containerId)
-  if (!container) return null
-  map = new maplibregl.Map({
-    container,
-    style: STYLE_URL,
-    center: [8.68, 50.11],
-    zoom: 2.1,
-    minZoom: 1,
-    maxZoom: 17,
-    attributionControl: true,
-    antialias: true,
-    renderWorldCopies: false
-  })
+  if (!container) {
+    onError?.(new Error('Detail map container not found.'))
+    return null
+  }
+
+  try {
+    map = new maplibregl.Map({
+      container,
+      style: STYLE_URL,
+      center: [8.68, 50.11],
+      zoom: 2.1,
+      minZoom: 1,
+      maxZoom: 17,
+      attributionControl: true,
+      canvasContextAttributes: { antialias: true },
+      renderWorldCopies: false
+    })
+  } catch (error) {
+    map = null
+    onError?.(error)
+    return null
+  }
+
   map.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), 'bottom-right')
   map.on('style.load', () => {
-    try { map.setProjection({ type: 'globe' }) } catch (_) { /* older renderer fallback */ }
     ensureSources()
     flushPending()
   })
+  map.once('load', () => {
+    try { map?.resize() } catch (_) { /* no-op */ }
+    onReady?.()
+  })
+  map.on('error', event => onError?.(event?.error || event))
   planeMarker = new maplibregl.Marker({ element: planeElement(), rotationAlignment: 'map', pitchAlignment: 'map' })
   return map
 }
