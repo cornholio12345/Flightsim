@@ -47,8 +47,11 @@ export const useFlightStore = defineStore('flight', () => {
       savedAt: Date.now(),
       status: 'saved',
       startedAt: null,
+      completedAt: null,
       progressOffset: 0,
-      gpsCorrection: null
+      gpsCorrection: null,
+      gpsFixCount: 0,
+      lastSummary: null
     }
     await db.trips.put(trip)
     await refreshTrips()
@@ -59,7 +62,16 @@ export const useFlightStore = defineStore('flight', () => {
     const trip = await db.trips.get(id)
     if (!trip) throw new Error('Saved flight not found.')
 
-    const active = { ...trip, status: 'active', startedAt: Date.now(), progressOffset: 0, gpsCorrection: null }
+    const active = {
+      ...trip,
+      status: 'active',
+      startedAt: Date.now(),
+      completedAt: null,
+      progressOffset: 0,
+      gpsCorrection: null,
+      gpsFixCount: 0,
+      lastSummary: null
+    }
     await db.transaction('rw', db.trips, async () => {
       const others = await db.trips.where('status').equals('active').toArray()
       await Promise.all(others.filter(item => item.id !== id).map(item => db.trips.update(item.id, { status: 'saved', startedAt: null })))
@@ -74,15 +86,42 @@ export const useFlightStore = defineStore('flight', () => {
     await refreshTrips()
   }
 
-  const applyGpsCorrection = async (id, { progressOffset, position, accuracyMeters, routeDistanceNm }) => {
+  const completeTrip = async (id, summary) => {
+    await db.trips.update(id, {
+      status: 'completed',
+      completedAt: Date.now(),
+      lastSummary: summary || null,
+      progressOffset: 0
+    })
+    await refreshTrips()
+    return savedTrips.value.find(item => item.id === id) || null
+  }
+
+  const applyGpsCorrection = async (id, {
+    progressOffset,
+    position,
+    accuracyMeters,
+    routeDistanceNm,
+    speedMps = null,
+    altitudeMeters = null,
+    heading = null
+  }) => {
+    const trip = await db.trips.get(id)
     const gpsCorrection = {
       at: Date.now(),
       lat: position.lat,
       lon: position.lon,
       accuracyMeters,
-      routeDistanceNm
+      routeDistanceNm,
+      speedMps: Number.isFinite(Number(speedMps)) ? Number(speedMps) : null,
+      altitudeMeters: Number.isFinite(Number(altitudeMeters)) ? Number(altitudeMeters) : null,
+      heading: Number.isFinite(Number(heading)) ? Number(heading) : null
     }
-    await db.trips.update(id, { progressOffset, gpsCorrection })
+    await db.trips.update(id, {
+      progressOffset,
+      gpsCorrection,
+      gpsFixCount: Number(trip?.gpsFixCount || 0) + 1
+    })
     await refreshTrips()
     return activeTrip.value
   }
@@ -99,6 +138,7 @@ export const useFlightStore = defineStore('flight', () => {
     savePlanForOffline,
     startTrip,
     stopTrip,
+    completeTrip,
     applyGpsCorrection,
     deleteTrip
   }
