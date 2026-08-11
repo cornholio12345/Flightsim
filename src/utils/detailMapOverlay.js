@@ -31,13 +31,18 @@ export const mountDetailMapOverlay = store => {
   detailContainer.id = 'detail-map'
   detailContainer.className = 'detail-map-container'
   detailContainer.style.display = 'none'
-  panel.insertBefore(detailContainer, panel.firstChild)
+
+  const detailCanvas = document.createElement('div')
+  detailCanvas.id = 'detail-map-canvas'
+  detailCanvas.className = 'detail-map-canvas'
+  detailContainer.appendChild(detailCanvas)
 
   const detailStatus = document.createElement('div')
   detailStatus.className = 'detail-map-status'
   detailStatus.textContent = 'Loading detail map…'
   detailStatus.style.display = 'none'
   detailContainer.appendChild(detailStatus)
+  panel.insertBefore(detailContainer, panel.firstChild)
 
   const switcher = document.createElement('div')
   switcher.className = 'map-mode-switch'
@@ -88,7 +93,7 @@ export const mountDetailMapOverlay = store => {
     if (mode !== 'detail') return
     if (!detailInitialized) {
       setStatus('Loading detail map…')
-      const detailMap = initializeDetailMap('detail-map', {
+      const detailMap = initializeDetailMap('detail-map-canvas', {
         onReady: () => {
           detailReady = true
           setStatus('')
@@ -97,7 +102,7 @@ export const mountDetailMapOverlay = store => {
         },
         onError: error => {
           console.warn('Detail map error', error)
-          if (!detailReady) setStatus(navigator.onLine ? 'Detail map could not load · retry' : 'Detail map needs an internet connection')
+          if (!detailReady) setStatus(navigator.onLine ? 'Detail map tiles could not load · retry' : 'Detail map needs an internet connection')
         }
       })
       detailInitialized = Boolean(detailMap)
@@ -119,6 +124,7 @@ export const mountDetailMapOverlay = store => {
     const detail = mode === 'detail'
     offlineButton.classList.toggle('active', !detail)
     detailButton.classList.toggle('active', detail)
+    panel.classList.toggle('detail-map-active', detail)
     canvas.style.display = detail ? 'none' : 'block'
     detailContainer.style.display = detail ? 'block' : 'none'
     if (detail) ensureDetail()
@@ -148,6 +154,7 @@ export const mountDetailMapOverlay = store => {
     clearInterval(syncTimer)
     panel.removeEventListener('click', interceptFollow, true)
     window.removeEventListener('resize', handleResize)
+    panel.classList.remove('detail-map-active')
     try { switcher.remove() } catch (_) { /* no-op */ }
     try { detailContainer.remove() } catch (_) { /* no-op */ }
     if (detailInitialized) destroyDetailMap()
