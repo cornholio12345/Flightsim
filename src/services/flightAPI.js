@@ -3,6 +3,7 @@ const API_HEADERS = {
   Accept: 'application/vnd.fpd.v1+json',
   'X-Units': 'AVIATION'
 }
+const AIRPORT_DATA_BASE = 'https://airport-data.com/api/ap_info.json'
 
 const clean = value => String(value || '').trim()
 
@@ -18,22 +19,73 @@ const requestJson = async path => {
         ? body.errors.map(item => typeof item === 'string' ? item : item?.message).filter(Boolean)
         : []
       if (messages.length) detail = messages.join(', ')
+      else if (body?.message) detail = body.message
     } catch (_) {
       // Keep the HTTP status as fallback.
     }
-    throw new Error(`Flight Plan Database request failed: ${detail}`)
+    const error = new Error(`Flight Plan Database request failed: ${detail}`)
+    error.status = response.status
+    throw error
   }
   return response.json()
 }
 
-const scorePlan = plan => {
+const resolveAirport = async value => {
+  const query = clean(value).toUpperCase()
+  if (!query) return null
+
+  // Flight Plan Database supports exact ICAO matching directly.
+  if (/^[A-Z0-9]{4}$/.test(query)) {
+    return { icao: query, iata: '', name: query }
+  }
+
+  // The UI intentionally accepts IATA codes. Resolve those to ICAO first so the
+  // route search can use Flight Plan Database's exact fromICAO/toICAO filters.
+  if (/^[A-Z]{3}$/.test(query)) {
+    try {
+      const response = await fetch(`${AIRPORT_DATA_BASE}?iata=${encodeURIComponent(query)}`, {
+        headers: { Accept: 'application/json' }
+      })
+      if (response.ok) {
+        const airport = await response.json()
+        if (airport?.status === 200 && airport?.icao) {
+          return {
+            icao: String(airport.icao).toUpperCase(),
+            iata: String(airport.iata || query).toUpperCase(),
+            name: airport.name || airport.location || query
+          }
+        }
+      }
+    } catch (_) {
+      // Airport resolution is a convenience. Fall back to Flight Plan Database's
+      // broader text search if this auxiliary service is unavailable.
+    }
+  }
+
+  return { icao: '', iata: '', name: clean(value), query: clean(value) }
+}
+
+const scorePlan = (plan, normalizedFlight = '') => {
   const tags = new Set((plan.tags || []).map(tag => String(tag).toLowerCase()))
   let score = Number(plan.popularity || 0)
+  if (normalizeFlightNumber(plan.flightNumber) === normalizedFlight && normalizedFlight) score += 2000
   if (tags.has('commercial')) score += 500
   if (tags.has('real')) score += 300
   if (tags.has('decoded')) score += 100
   score += Math.min(100, Number(plan.waypoints || 0))
   return score
+}
+
+const buildPlanSearchPath = params => `/search/plans?${new URLSearchParams({ ...params, limit: '20' }).toString()}`
+
+const dedupePlans = plans => {
+  const seen = new Set()
+  return plans.filter(plan => {
+    const id = Number(plan?.id)
+    if (!id || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
 }
 
 export const searchFlightPlans = async ({ flightNumber, from, to }) => {
@@ -45,23 +97,52 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
     throw new Error('Enter a flight number or a departure/destination pair.')
   }
 
-  const params = new URLSearchParams({ limit: '20' })
-  if (normalizedFlight) params.set('flightNumber', normalizedFlight)
-  if (fromQuery) params.set('from', fromQuery)
-  if (toQuery) params.set('to', toQuery)
+  const [resolvedFrom, resolvedTo] = await Promise.all([
+    fromQuery ? resolveAirport(fromQuery) : Promise.resolve(null),
+    toQuery ? resolveAirport(toQuery) : Promise.resolve(null)
+  ])
 
-  let plans = await requestJson(`/search/plans?${params.toString()}`)
+  const searches = []
+  const errors = []
 
-  // Flight numbers are not consistently populated in community plans. If an exact
-  // flight-number search comes back empty, retry with the supplied route pair.
-  if (!plans.length && normalizedFlight && fromQuery && toQuery) {
-    const fallback = new URLSearchParams({ from: fromQuery, to: toQuery, limit: '20' })
-    plans = await requestJson(`/search/plans?${fallback.toString()}`)
+  // Search by commercial flight number independently. Community flight-plan data
+  // does not consistently contain airline flight numbers, and a server-side error
+  // here must never prevent the route fallback from running.
+  if (normalizedFlight) {
+    try {
+      const byFlight = await requestJson(buildPlanSearchPath({ flightNumber: normalizedFlight }))
+      if (Array.isArray(byFlight)) searches.push(...byFlight)
+    } catch (error) {
+      errors.push(error)
+    }
   }
+
+  // Route lookup is the reliable fallback for our use case: we need a plausible
+  // route to approximate progress, not necessarily a community plan tagged with
+  // the exact commercial flight number.
+  if (fromQuery && toQuery) {
+    try {
+      const routeParams = resolvedFrom?.icao && resolvedTo?.icao
+        ? { fromICAO: resolvedFrom.icao, toICAO: resolvedTo.icao, sort: 'popularity' }
+        : { from: fromQuery, to: toQuery, sort: 'popularity' }
+      const byRoute = await requestJson(buildPlanSearchPath(routeParams))
+      if (Array.isArray(byRoute)) searches.push(...byRoute)
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+
+  // A flight-number-only query has no useful fallback if the upstream endpoint
+  // itself fails. Surface that error; otherwise prefer returning route results.
+  if (!searches.length && errors.length && !(fromQuery && toQuery)) {
+    throw errors[0]
+  }
+
+  const plans = dedupePlans(searches)
 
   return plans
     .filter(plan => plan?.id && plan?.fromICAO && plan?.toICAO)
-    .sort((a, b) => scorePlan(b) - scorePlan(a))
+    .sort((a, b) => scorePlan(b, normalizedFlight) - scorePlan(a, normalizedFlight))
     .slice(0, 12)
     .map(plan => ({
       id: plan.id,
@@ -75,7 +156,9 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
       waypoints: Number(plan.waypoints || 0),
       tags: plan.tags || [],
       popularity: Number(plan.popularity || 0),
-      updatedAt: plan.updatedAt || null
+      updatedAt: plan.updatedAt || null,
+      resolvedFrom: resolvedFrom || null,
+      resolvedTo: resolvedTo || null
     }))
 }
 
