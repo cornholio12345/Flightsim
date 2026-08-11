@@ -1,0 +1,112 @@
+name: Android APK Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Setup Java (for Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Install Android command-line tools
+        run: |
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          cd $ANDROID_SDK_ROOT/cmdline-tools
+          curl -sS -L https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
+          unzip -q cmdline-tools.zip
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
+          mv cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/ || true
+          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+          yes | sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses
+          sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build web assets
+        run: |
+          npm run build --if-present || npm run build
+
+      - name: Prepare Android project (Capacitor/Cordova)
+        run: |
+          if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ]; then
+            npx cap sync android || true
+          fi
+          if [ -f "config.xml" ] && [ -d "www" ]; then
+            if ! command -v cordova >/dev/null 2>&1; then
+              npm i -g cordova
+            fi
+            cordova platform add android --no-update || true
+          fi
+
+      - name: Build Android release with Gradle
+        working-directory: android
+        run: |
+          chmod +x ./gradlew || true
+          ./gradlew clean assembleRelease --no-daemon
+
+      - name: Find APK
+        id: findapk
+        run: |
+          unsigned=$(find android -type f -path "*/outputs/apk/*/app-*-unsigned.apk" -print -quit || true)
+          if [ -z "$unsigned" ]; then
+            unsigned=$(find android -type f -path "*/outputs/apk/*/app-release.apk" -print -quit || true)
+          fi
+          signed=$(find android -type f -name "*-release.apk" -print -quit || true)
+          echo "unsigned_apk=$unsigned" >> $GITHUB_OUTPUT
+          echo "signed_apk=$signed" >> $GITHUB_OUTPUT
+          echo "unsigned_apk=$unsigned"
+          echo "signed_apk=$signed"
+
+      - name: Decode keystore from secret
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
+
+      - name: Sign APK (apksigner)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          apk="${{ steps.findapk.outputs.unsigned_apk }}"
+          if [ -z "$apk" ]; then
+            apk="${{ steps.findapk.outputs.signed_apk }}"
+            if [ -z "$apk" ]; then
+              echo "No APK found to sign" && exit 1
+            fi
+          fi
+          apksigner="$ANDROID_SDK_ROOT/build-tools/33.0.2/apksigner"
+          if [ ! -x "$apksigner" ]; then
+            apksigner=$(which apksigner || true)
+          fi
+          if [ -z "$apksigner" ]; then
+            echo "apksigner not found" && exit 1
+          fi
+          $apksigner sign --ks release.keystore --ks-key-alias "${{ secrets.KEY_ALIAS }}" --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} --key-pass pass:${{ secrets.KEY_PASSWORD }} "$apk"
+          echo "signed_apk=$apk" >> $GITHUB_OUTPUT
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            ${{ steps.findapk.outputs.signed_apk }}
+            ${{ steps.findapk.outputs.unsigned_apk }}
+            release.keystore
