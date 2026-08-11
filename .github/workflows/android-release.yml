@@ -28,11 +28,9 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           missing=0
-          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD; do
             if [ -z "${!name}" ]; then
               echo "::error::$name is not configured as a repository Actions secret"
               missing=1
@@ -133,8 +131,6 @@ jobs:
       - name: Sign and verify release APK
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
           UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
@@ -145,9 +141,9 @@ jobs:
           "$BUILD_TOOLS/apksigner" sign \
             --ks "$RUNNER_TEMP/flightsim-upload.jks" \
             --ks-type JKS \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-key-alias flightsim-upload \
             --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEY_PASSWORD \
+            --key-pass env:ANDROID_KEYSTORE_PASSWORD \
             --out "$SIGNED" \
             "$ALIGNED"
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$SIGNED"
@@ -155,8 +151,6 @@ jobs:
       - name: Sign and verify release AAB
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           UNSIGNED="android/app/build/outputs/bundle/release/app-release.aab"
           SIGNED="$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.aab"
@@ -165,12 +159,12 @@ jobs:
             -keystore "$RUNNER_TEMP/flightsim-upload.jks" \
             -storetype JKS \
             -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            -keypass "$ANDROID_KEY_PASSWORD" \
+            -keypass "$ANDROID_KEYSTORE_PASSWORD" \
             -sigalg SHA256withRSA \
             -digestalg SHA-256 \
             -signedjar "$SIGNED" \
             "$UNSIGNED" \
-            "$ANDROID_KEY_ALIAS"
+            flightsim-upload
           jarsigner -verify -verbose -certs "$SIGNED"
 
       - name: Collect release files
