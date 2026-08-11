@@ -1,4 +1,4 @@
-name: Android APK Build
+name: Android APK Build (unsigned)
 
 on:
   push:
@@ -71,42 +71,16 @@ jobs:
           if [ -z "$unsigned" ]; then
             unsigned=$(find android -type f -path "*/outputs/apk/*/app-release.apk" -print -quit || true)
           fi
-          signed=$(find android -type f -name "*-release.apk" -print -quit || true)
+          built=$(find android -type f -name "*-release.apk" -print -quit || true)
           echo "unsigned_apk=$unsigned" >> $GITHUB_OUTPUT
-          echo "signed_apk=$signed" >> $GITHUB_OUTPUT
+          echo "built_apk=$built" >> $GITHUB_OUTPUT
           echo "unsigned_apk=$unsigned"
-          echo "signed_apk=$signed"
+          echo "built_apk=$built"
 
-      - name: Decode keystore from secret
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
-
-      - name: Sign APK (apksigner)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
-        run: |
-          apk="${{ steps.findapk.outputs.unsigned_apk }}"
-          if [ -z "$apk" ]; then
-            apk="${{ steps.findapk.outputs.signed_apk }}"
-            if [ -z "$apk" ]; then
-              echo "No APK found to sign" && exit 1
-            fi
-          fi
-          apksigner="$ANDROID_SDK_ROOT/build-tools/33.0.2/apksigner"
-          if [ ! -x "$apksigner" ]; then
-            apksigner=$(which apksigner || true)
-          fi
-          if [ -z "$apksigner" ]; then
-            echo "apksigner not found" && exit 1
-          fi
-          $apksigner sign --ks release.keystore --ks-key-alias "${{ secrets.KEY_ALIAS }}" --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} --key-pass pass:${{ secrets.KEY_PASSWORD }} "$apk"
-          echo "signed_apk=$apk" >> $GITHUB_OUTPUT
-
-      - name: Upload APK artifact
+      - name: Upload APK artifact (unsigned)
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: android-apk-unsigned
           path: |
-            ${{ steps.findapk.outputs.signed_apk }}
             ${{ steps.findapk.outputs.unsigned_apk }}
-            release.keystore
+            ${{ steps.findapk.outputs.built_apk }}
