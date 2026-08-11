@@ -12,7 +12,7 @@
             <div>
               <span class="kicker">ACTIVE FLIGHT</span>
               <h2>{{ activeTrip.flightNumber || routeLabel(activeTrip) }}</h2>
-              <p>{{ routeLabel(activeTrip) }}</p>
+              <p v-if="activeTrip.flightNumber">{{ routeLabel(activeTrip) }}</p>
             </div>
             <strong>{{ Math.round(currentProgress * 100) }}%</strong>
           </div>
@@ -132,6 +132,10 @@ let globe
 const nmToKm = value => Math.round(Number(value || 0) * 1.852)
 const ftToM = value => Math.round(Number(value || 0) * 0.3048)
 const routeLabel = item => `${item?.fromIATA || item?.fromICAO || '?'} → ${item?.toIATA || item?.toICAO || '?'}`
+const globeLabels = item => ({
+  fromLabel: item?.fromIATA || item?.fromICAO || 'DEP',
+  toLabel: item?.toIATA || item?.toICAO || 'ARR'
+})
 const savedTrips = computed(() => flightStore.savedTrips)
 const activeTrip = computed(() => flightStore.activeTrip)
 const timeProgress = computed(() => {
@@ -180,7 +184,7 @@ const saveSelectedPlan = async () => {
       viaSummary: selectedPlan.value.viaSummary || ''
     }
     const trip = await flightStore.savePlanForOffline({ plan: fullPlan, requestedFlightNumber: normalizeFlightNumber(flightNumber.value), blockMinutes: blockMinutes.value || estimateBlockMinutes(fullPlan.distanceNm) })
-    setRouteOnGlobe(trip.route.nodes)
+    setRouteOnGlobe(trip.route.nodes, globeLabels(trip))
     setMessage('Route downloaded and stored on this device. You can now go offline.')
   } catch (error) {
     setMessage(error.message || 'Could not save this route.', true)
@@ -190,7 +194,7 @@ const saveSelectedPlan = async () => {
 const startSavedFlight = async trip => {
   try {
     const active = await flightStore.startTrip(trip.id)
-    setRouteOnGlobe(active.route.nodes)
+    setRouteOnGlobe(active.route.nodes, globeLabels(active))
     now.value = Date.now()
     setMessage('Flight started. Progress is now estimated from elapsed time and the cached route.')
   } catch (error) { setMessage(error.message || 'Could not start this flight.', true) }
@@ -223,13 +227,13 @@ const handleOnline = () => { isOnline.value = navigator.onLine }
 onMounted(async () => {
   globe = initializeGlobe('globe-canvas')
   await flightStore.refreshTrips()
-  if (activeTrip.value?.route?.nodes) setRouteOnGlobe(activeTrip.value.route.nodes)
+  if (activeTrip.value?.route?.nodes) setRouteOnGlobe(activeTrip.value.route.nodes, globeLabels(activeTrip.value))
   timer = window.setInterval(() => { now.value = Date.now() }, 1000)
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOnline)
 })
 watch(flightState, state => { if (state && globe) updateAircraftPosition(state.lat, state.lon, state.altitudeFt, state.bearing) }, { immediate: true })
-watch(activeTrip, trip => { if (trip?.route?.nodes) setRouteOnGlobe(trip.route.nodes) })
+watch(activeTrip, trip => { if (trip?.route?.nodes) setRouteOnGlobe(trip.route.nodes, globeLabels(trip)) })
 onBeforeUnmount(() => {
   clearInterval(timer)
   window.removeEventListener('online', handleOnline)
