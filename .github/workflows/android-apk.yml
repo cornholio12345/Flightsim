@@ -38,15 +38,45 @@ jobs:
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses <<< 'y' || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
-      - name: Install npm deps
-        run: npm ci
+      - name: Detect JS project dir and compute cache key
+        id: detect
+        run: |
+          # Find package.json in repo root or first-level subdir
+          if [ -f package.json ]; then
+            dir="."
+          else
+            dir=$(find . -maxdepth 2 -name package.json -printf '%h\n' | head -n1 || true)
+          fi
+          if [ -z "$dir" ]; then
+            echo "No package.json found in repository (search depth 2)." >&2
+            exit 1
+          fi
+          pkg="$dir/package.json"
+          # compute a simple hash to use for cache key
+          cache_key=$(sha1sum "$pkg" | cut -d' ' -f1)
+          echo "project_dir=$dir" >> $GITHUB_OUTPUT
+          echo "cache_key=$cache_key" >> $GITHUB_OUTPUT
+          echo "Found project_dir=$dir"
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.detect.outputs.project_dir }}/node_modules
+          key: node-modules-${{ runner.os }}-${{ steps.detect.outputs.cache_key }}
+
+      - name: Install npm dependencies (works without lockfile)
+        run: |
+          cd "${{ steps.detect.outputs.project_dir }}"
+          npm install --no-audit --no-fund
 
       - name: Build web assets
         run: |
+          cd "${{ steps.detect.outputs.project_dir }}"
           npm run build --if-present || npm run build
 
       - name: Prepare Android project (Capacitor/Cordova)
         run: |
+          cd "${{ steps.detect.outputs.project_dir }}"
           if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ]; then
             npx cap sync android || true
           fi
@@ -57,8 +87,27 @@ jobs:
             cordova platform add android --no-update || true
           fi
 
+      - name: Locate android project dir
+        id: findandroid
+        run: |
+          # Prefer top-level android/; otherwise look under project dir
+          if [ -d android ]; then
+            ad="android"
+          elif [ -d "${{ steps.detect.outputs.project_dir }}/android" ]; then
+            ad="${{ steps.detect.outputs.project_dir }}/android"
+          else
+            # try finding any android directory deeper (maxdepth 3)
+            ad=$(find . -maxdepth 4 -type d -name android -print -quit || true)
+          fi
+          if [ -z "$ad" ]; then
+            echo "No android/ directory found." >&2
+            exit 1
+          fi
+          echo "android_dir=$ad" >> $GITHUB_OUTPUT
+          echo "Found android_dir=$ad"
+
       - name: Build Android release with Gradle
-        working-directory: android
+        working-directory: ${{ steps.findandroid.outputs.android_dir }}
         run: |
           chmod +x ./gradlew || true
           ./gradlew clean assembleRelease --no-daemon
@@ -66,20 +115,15 @@ jobs:
       - name: Find APK
         id: findapk
         run: |
-          unsigned=$(find android -type f -path "*/outputs/apk/*/app-*-unsigned.apk" -print -quit || true)
+          unsigned=$(find "${{ steps.findandroid.outputs.android_dir }}" -type f -path "*/outputs/apk/*/app-*-unsigned.apk" -print -quit || true)
           if [ -z "$unsigned" ]; then
-            unsigned=$(find android -type f -path "*/outputs/apk/*/app-release.apk" -print -quit || true)
+            unsigned=$(find "${{ steps.findandroid.outputs.android_dir }}" -type f -path "*/outputs/apk/*/app-release.apk" -print -quit || true)
           fi
-          built=$(find android -type f -name "*-release.apk" -print -quit || true)
+          built=$(find "${{ steps.findandroid.outputs.android_dir }}" -type f -name "*-release.apk" -print -quit || true)
           echo "unsigned_apk=$unsigned" >> $GITHUB_OUTPUT
           echo "built_apk=$built" >> $GITHUB_OUTPUT
           echo "unsigned_apk=$unsigned"
           echo "built_apk=$built"
 
-      - name: Upload APK artifact (unsigned)
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apk-unsigned
-          path: |
-            ${{ steps.findapk.outputs.unsigned_apk }}
-            ${{ steps.findapk.outputs.built_apk }}
+      - name: Upload](#)
+
