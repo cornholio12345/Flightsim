@@ -18,7 +18,7 @@ on:
       - '.github/release-trigger'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-release:
@@ -162,11 +162,11 @@ jobs:
             -storepass "$ANDROID_KEYSTORE_PASSWORD" \
             -alias flightsim-upload >/dev/null
 
-      - name: Build unsigned release APK and AAB
+      - name: Build unsigned release APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Sign and verify release APK
         env:
@@ -188,36 +188,24 @@ jobs:
             "$ALIGNED"
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$SIGNED"
 
-      - name: Sign and verify release AAB
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-        run: |
-          UNSIGNED="android/app/build/outputs/bundle/release/app-release.aab"
-          SIGNED="$RUNNER_TEMP/flightsim-${RELEASE_VERSION_NAME}-release.aab"
-          test -f "$UNSIGNED"
-          jarsigner \
-            -keystore "$RUNNER_TEMP/flightsim-upload.jks" \
-            -storetype JKS \
-            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            -keypass "$ANDROID_KEYSTORE_PASSWORD" \
-            -sigalg SHA256withRSA \
-            -digestalg SHA-256 \
-            -signedjar "$SIGNED" \
-            "$UNSIGNED" \
-            flightsim-upload
-          jarsigner -verify -verbose -certs "$SIGNED"
-
-      - name: Collect release files
+      - name: Collect APK
         run: |
           mkdir -p release
           cp "$RUNNER_TEMP/flightsim-${RELEASE_VERSION_NAME}-release.apk" release/
-          cp "$RUNNER_TEMP/flightsim-${RELEASE_VERSION_NAME}-release.aab" release/
           ls -lh release/
 
-      - name: Upload signed release
-        uses: actions/upload-artifact@v4
-        with:
-          name: flightsim-${{ env.RELEASE_VERSION_NAME }}-release
-          path: release/*
-          retention-days: 30
-          if-no-files-found: error
+      - name: Publish direct APK release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${RELEASE_VERSION_NAME}"
+          APK="release/flightsim-${RELEASE_VERSION_NAME}-release.apk"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$APK" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "FlightSim ${RELEASE_VERSION_NAME}" \
+              --notes "Signed Android APK for FlightSim ${RELEASE_VERSION_NAME}."
+          fi
