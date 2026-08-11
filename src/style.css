@@ -20,22 +20,6 @@ html, body {
   height: 100%;
 }
 
-/* Keep saved flights immediately available before the route-search workflow. */
-.controls {
-  display: flex;
-  flex-direction: column;
-}
-
-.controls > .active-card { order: 0; }
-.controls > .saved-section { order: 1; }
-.controls > .section-head { order: 2; }
-.controls > .form-grid { order: 3; }
-.controls > .message { order: 4; }
-.controls > .results { order: 5; }
-.controls > .selected-plan { order: 6; }
-.controls > .attribution { order: 7; }
-.controls > .saved-section .section-head.compact { margin-top: 18px; }
-
 input:focus {
   outline: none;
 }
