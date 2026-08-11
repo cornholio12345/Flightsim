@@ -58,9 +58,11 @@ let aircraft
 let aircraftState = null
 let routeLine
 let alternativeRoutes
+let routeSamples = []
 let routePoints = []
 let routeMarkers = []
 let mapLabels = []
+let cityLights = []
 let animationFrame
 let resizeObserver
 let interactionCleanup
@@ -116,29 +118,58 @@ const greatCirclePoint = (a, b, t, radius = RADIUS + 0.026) => {
     .multiplyScalar(radius)
 }
 
-const routePointsForNodes = (nodes, radius = RADIUS + 0.026) => {
-  const points = []
-  if (!nodes || nodes.length < 2) return points
+const angularDistance = (a, b) => {
+  const va = latLonVector(a.lat, a.lon, 1).normalize()
+  const vb = latLonVector(b.lat, b.lon, 1).normalize()
+  return Math.acos(THREE.MathUtils.clamp(va.dot(vb), -1, 1))
+}
+
+const routeSamplesForNodes = (nodes, radius = RADIUS + 0.026) => {
+  if (!nodes || nodes.length < 2) return []
+  const segmentLengths = []
+  let total = 0
+  for (let index = 0; index < nodes.length - 1; index += 1) {
+    const length = angularDistance(nodes[index], nodes[index + 1])
+    segmentLengths.push(length)
+    total += length
+  }
+  total = Math.max(total, 1e-9)
+
+  const samples = []
+  let cumulative = 0
   for (let index = 0; index < nodes.length - 1; index += 1) {
     const start = nodes[index]
     const end = nodes[index + 1]
-    for (let step = 0; step < 12; step += 1) points.push(greatCirclePoint(start, end, step / 12, radius))
+    const length = segmentLengths[index]
+    for (let step = 0; step < 12; step += 1) {
+      const fraction = step / 12
+      samples.push({
+        point: greatCirclePoint(start, end, fraction, radius),
+        progress: THREE.MathUtils.clamp((cumulative + length * fraction) / total, 0, 1)
+      })
+    }
+    cumulative += length
   }
-  points.push(latLonVector(nodes[nodes.length - 1].lat, nodes[nodes.length - 1].lon, radius))
-  return points
+  samples.push({
+    point: latLonVector(nodes[nodes.length - 1].lat, nodes[nodes.length - 1].lon, radius),
+    progress: 1
+  })
+  return samples
 }
 
-const destinationPoint = (lat, lon, bearing, angularDistance = 0.012) => {
+const routePointsForNodes = (nodes, radius = RADIUS + 0.026) => routeSamplesForNodes(nodes, radius).map(sample => sample.point)
+
+const destinationPoint = (lat, lon, bearing, angularDistanceValue = 0.012) => {
   const phi1 = THREE.MathUtils.degToRad(Number(lat))
   const lambda1 = THREE.MathUtils.degToRad(Number(lon))
   const theta = THREE.MathUtils.degToRad(Number(bearing || 0))
   const phi2 = Math.asin(THREE.MathUtils.clamp(
-    Math.sin(phi1) * Math.cos(angularDistance) + Math.cos(phi1) * Math.sin(angularDistance) * Math.cos(theta),
+    Math.sin(phi1) * Math.cos(angularDistanceValue) + Math.cos(phi1) * Math.sin(angularDistanceValue) * Math.cos(theta),
     -1,
     1
   ))
-  const y = Math.sin(theta) * Math.sin(angularDistance) * Math.cos(phi1)
-  const x = Math.cos(angularDistance) - Math.sin(phi1) * Math.sin(phi2)
+  const y = Math.sin(theta) * Math.sin(angularDistanceValue) * Math.cos(phi1)
+  const x = Math.cos(angularDistanceValue) - Math.sin(phi1) * Math.sin(phi2)
   const lambda2 = lambda1 + Math.atan2(y, x)
   return { lat: THREE.MathUtils.radToDeg(phi2), lon: THREE.MathUtils.radToDeg(lambda2) }
 }
@@ -240,7 +271,7 @@ const buildNightLayer = () => {
       varying vec3 vLocalNormal;
       void main() {
         float light = dot(normalize(vLocalNormal), normalize(sunDirection));
-        float night = smoothstep(0.10, -0.18, light);
+        float night = 1.0 - smoothstep(-0.18, 0.10, light);
         gl_FragColor = vec4(0.003, 0.015, 0.045, night * 0.62);
       }
     `
@@ -336,6 +367,31 @@ const buildMapLabelTexture = (text, kind) => {
   return texture
 }
 
+const buildCityLightTexture = () => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 96
+  canvas.height = 96
+  const context = canvas.getContext('2d')
+  const glow = context.createRadialGradient(48, 48, 1, 48, 48, 38)
+  glow.addColorStop(0, 'rgba(255,245,190,1)')
+  glow.addColorStop(0.13, 'rgba(255,211,96,.95)')
+  glow.addColorStop(0.42, 'rgba(255,171,55,.38)')
+  glow.addColorStop(1, 'rgba(255,145,25,0)')
+  context.fillStyle = glow
+  context.fillRect(0, 0, 96, 96)
+  ;[[35,43,3.2],[57,34,2.3],[61,58,2.5],[40,61,1.9],[49,49,3.5]].forEach(([x,y,r]) => {
+    context.beginPath()
+    context.arc(x, y, r, 0, Math.PI * 2)
+    context.fillStyle = 'rgba(255,248,205,.95)'
+    context.fill()
+  })
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  texture.needsUpdate = true
+  return texture
+}
+
 const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
   const material = new THREE.SpriteMaterial({ map: buildMapLabelTexture(text, kind), transparent: true, depthTest: true, depthWrite: false })
   const sprite = new THREE.Sprite(material)
@@ -374,6 +430,32 @@ const createMapLabels = () => {
   })
 }
 
+const createCityLights = () => {
+  const texture = buildCityLightTexture()
+  CITY_LABELS.forEach(([name, lat, lon], index) => {
+    const normal = latLonVector(lat, lon, 1).normalize()
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      opacity: 0,
+      depthTest: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+    const sprite = new THREE.Sprite(material)
+    sprite.position.copy(normal.clone().multiplyScalar(RADIUS + 0.045))
+    sprite.scale.set(0.075, 0.075, 1)
+    sprite.renderOrder = 9
+    sprite.visible = false
+    sprite.userData.name = name
+    sprite.userData.normal = normal
+    sprite.userData.phase = index * 1.731
+    sprite.userData.baseScale = 0.075
+    earthGroup.add(sprite)
+    cityLights.push(sprite)
+  })
+}
+
 const updateMapLabels = () => {
   if (!camera || !mapLabels.length) return
   const worldPosition = new THREE.Vector3()
@@ -393,8 +475,33 @@ const updateMapLabels = () => {
     label.scale.set(label.userData.baseWidth * scaleFactor, label.userData.baseHeight * scaleFactor, 1)
     if (label.userData.kind === 'city') {
       const daylight = label.userData.normal.dot(sunDirectionLocal)
-      label.material.opacity = daylight < -0.08 ? 1 : 0.72
+      label.material.opacity = daylight < -0.08 ? 0.86 : 0.68
     }
+  })
+}
+
+const updateCityLights = timestamp => {
+  if (!camera || !cityLights.length) return
+  const worldPosition = new THREE.Vector3()
+  const toCamera = new THREE.Vector3()
+  cityLights.forEach(light => {
+    if (camera.position.z > 6.4) {
+      light.visible = false
+      return
+    }
+    light.getWorldPosition(worldPosition)
+    toCamera.copy(camera.position).sub(worldPosition).normalize()
+    const facing = worldPosition.clone().normalize().dot(toCamera) > 0.025
+    const daylight = light.userData.normal.dot(sunDirectionLocal)
+    const night = THREE.MathUtils.clamp((-daylight + 0.04) / 0.55, 0, 1)
+    light.visible = facing && night > 0.06
+    if (!light.visible) return
+    const twinkle = 0.78 + 0.22 * Math.pow(Math.sin(timestamp * 0.004 + light.userData.phase), 2)
+    const distance = camera.position.distanceTo(worldPosition)
+    const zoomScale = THREE.MathUtils.clamp(distance / 3.5, 0.38, 1)
+    const scale = light.userData.baseScale * zoomScale * (0.94 + 0.08 * twinkle)
+    light.scale.set(scale, scale, 1)
+    light.material.opacity = night * twinkle * 0.95
   })
 }
 
@@ -506,8 +613,30 @@ const createRouteMarker = (node, label, accentHex, accentCss) => {
   tag.position.copy(normal.clone().multiplyScalar(RADIUS + 0.09))
   tag.scale.set(0.57, 0.21, 1)
   tag.renderOrder = 15
+  group.userData.pin = pin
+  group.userData.tag = tag
+  group.userData.baseTagWidth = 0.57
+  group.userData.baseTagHeight = 0.21
   group.add(tag)
   return group
+}
+
+const updateRouteMarkerScale = () => {
+  if (!camera || !routeMarkers.length) return
+  const worldPosition = new THREE.Vector3()
+  routeMarkers.forEach(marker => {
+    const tag = marker.userData.tag
+    const pin = marker.userData.pin
+    if (!tag) return
+    tag.getWorldPosition(worldPosition)
+    const distance = camera.position.distanceTo(worldPosition)
+    const factor = THREE.MathUtils.clamp(distance / 4.0, 0.18, 0.88)
+    tag.scale.set(marker.userData.baseTagWidth * factor, marker.userData.baseTagHeight * factor, 1)
+    if (pin) {
+      const pinScale = THREE.MathUtils.clamp(factor * 1.3, 0.36, 1)
+      pin.scale.setScalar(pinScale)
+    }
+  })
 }
 
 const updateAircraftScreenRotation = () => {
@@ -520,6 +649,14 @@ const updateAircraftScreenRotation = () => {
   from.project(camera)
   to.project(camera)
   aircraft.material.rotation = Math.atan2(to.y - from.y, to.x - from.x) - Math.PI / 2
+}
+
+const updateRouteDashScale = () => {
+  if (!routeLine || !camera) return
+  const flown = routeLine.children.find(child => child.userData.role === 'flown')
+  if (flown?.material?.isLineDashedMaterial) {
+    flown.material.scale = THREE.MathUtils.clamp(5.0 / Math.max(camera.position.z, 0.5), 0.7, 2.2)
+  }
 }
 
 const centerCoordinate = (lat, lon) => {
@@ -536,9 +673,9 @@ const focusRoute = nodes => {
   const midpoint = a.clone().add(b).normalize()
   const midLat = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(midpoint.y, -1, 1)))
   const midLon = THREE.MathUtils.radToDeg(Math.atan2(-midpoint.z, midpoint.x))
-  const angularDistance = Math.acos(THREE.MathUtils.clamp(a.dot(b), -1, 1))
+  const distance = Math.acos(THREE.MathUtils.clamp(a.dot(b), -1, 1))
   centerCoordinate(midLat, midLon)
-  camera.position.z = THREE.MathUtils.clamp(5.05 + angularDistance * 1.05, 5.25, 7.4)
+  camera.position.z = THREE.MathUtils.clamp(5.05 + distance * 1.05, 5.25, 7.4)
   followAircraft = false
 }
 
@@ -649,6 +786,7 @@ export const initializeGlobe = canvasId => {
   )
   earthGroup.add(atmosphere)
   createMapLabels()
+  createCityLights()
   aircraft = createAircraftMarker()
   earthGroup.add(aircraft)
   scene.add(new THREE.HemisphereLight(0xb8d9e7, 0x071019, 0.82))
@@ -676,7 +814,10 @@ export const initializeGlobe = canvasId => {
     if (Date.now() - lastSunUpdateAt > 60_000) updateSunLighting()
     updateAircraftScreenRotation()
     updateAircraftScale()
+    updateRouteMarkerScale()
+    updateRouteDashScale()
     updateMapLabels()
+    updateCityLights(timestamp)
     renderer.render(scene, camera)
   }
   animate(0)
@@ -698,12 +839,14 @@ export const setRouteAlternatives = (plans, selectedId = null) => {
   alternativeRoutes = new THREE.Group()
   const palette = [0x72e0b2, 0x72a7db, 0xb494df, 0xd3aa70, 0x7fc2c9, 0x9ca9bd]
   viable.forEach((plan, index) => {
+    const baseColor = palette[index % palette.length]
     const line = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(routePointsForNodes(plan.previewNodes, RADIUS + 0.019 + index * 0.001)),
-      new THREE.LineBasicMaterial({ color: palette[index % palette.length], transparent: true, opacity: 0.42 })
+      new THREE.LineBasicMaterial({ color: baseColor, transparent: true, opacity: 0.42 })
     )
     line.userData.planId = String(plan.id)
     line.userData.rank = Number(plan.recommendationRank || index + 1)
+    line.userData.baseColor = baseColor
     alternativeRoutes.add(line)
   })
   earthGroup.add(alternativeRoutes)
@@ -717,7 +860,7 @@ export const highlightRouteAlternative = planId => {
   alternativeRoutes.children.forEach(line => {
     const isSelected = String(line.userData.planId) === selected
     line.material.opacity = isSelected ? 1 : line.userData.rank === 1 ? 0.64 : 0.32
-    line.material.color.setHex(isSelected ? 0x78ecba : line.userData.rank === 1 ? 0x55c69a : line.material.color.getHex())
+    line.material.color.setHex(isSelected ? 0x78ecba : line.userData.rank === 1 ? 0x55c69a : line.userData.baseColor)
   })
   markInteraction()
 }
@@ -735,15 +878,18 @@ export const setRouteOnGlobe = (nodes, labels = {}) => {
     disposeObject(marker)
   })
   routeMarkers = []
+  routeSamples = []
   routePoints = []
   if (!nodes || nodes.length < 2) return
 
-  routePoints = routePointsForNodes(nodes)
+  routeSamples = routeSamplesForNodes(nodes)
+  routePoints = routeSamples.map(sample => sample.point)
   routeLine = new THREE.Group()
   const flown = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints([routePoints[0], routePoints[0]]),
-    new THREE.LineBasicMaterial({ color: 0x75efb9, transparent: true, opacity: 1 })
+    new THREE.LineDashedMaterial({ color: 0x75efb9, transparent: true, opacity: 1, dashSize: 0.055, gapSize: 0.034, scale: 1 })
   )
+  flown.computeLineDistances()
   const remaining = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(routePoints),
     new THREE.LineBasicMaterial({ color: 0x75a0aa, transparent: true, opacity: 0.58 })
@@ -766,18 +912,35 @@ export const setRouteOnGlobe = (nodes, labels = {}) => {
 }
 
 export const updateRouteProgress = progress => {
-  if (!routeLine || routePoints.length < 2) return
+  if (!routeLine || routeSamples.length < 2) return
   const p = THREE.MathUtils.clamp(Number(progress || 0), 0, 1)
-  const split = Math.max(1, Math.min(routePoints.length - 1, Math.round(p * (routePoints.length - 1))))
+  let upperIndex = routeSamples.findIndex(sample => sample.progress >= p)
+  if (upperIndex < 0) upperIndex = routeSamples.length - 1
+  const lowerIndex = Math.max(0, upperIndex - 1)
+  const lower = routeSamples[lowerIndex]
+  const upper = routeSamples[upperIndex]
+  const span = Math.max(1e-9, upper.progress - lower.progress)
+  const local = THREE.MathUtils.clamp((p - lower.progress) / span, 0, 1)
+  const interpolated = lower.point.clone().lerp(upper.point, local).normalize().multiplyScalar(RADIUS + 0.026)
+  const currentPoint = aircraftState
+    ? latLonVector(aircraftState.lat, aircraftState.lon, RADIUS + 0.028)
+    : interpolated
+
   const flown = routeLine.children.find(child => child.userData.role === 'flown')
   const remaining = routeLine.children.find(child => child.userData.role === 'remaining')
   if (flown) {
+    const points = routeSamples.slice(0, lowerIndex + 1).map(sample => sample.point)
+    points.push(currentPoint)
+    if (points.length < 2) points.push(currentPoint.clone())
     flown.geometry.dispose()
-    flown.geometry = new THREE.BufferGeometry().setFromPoints(routePoints.slice(0, split + 1))
+    flown.geometry = new THREE.BufferGeometry().setFromPoints(points)
+    flown.computeLineDistances()
   }
   if (remaining) {
+    const points = [currentPoint, ...routeSamples.slice(upperIndex).map(sample => sample.point)]
+    if (points.length < 2) points.push(currentPoint.clone())
     remaining.geometry.dispose()
-    remaining.geometry = new THREE.BufferGeometry().setFromPoints(routePoints.slice(split))
+    remaining.geometry = new THREE.BufferGeometry().setFromPoints(points)
   }
 }
 
@@ -816,6 +979,10 @@ export const destroyGlobe = () => {
     earthGroup?.remove(label)
     disposeObject(label)
   })
+  cityLights.forEach(light => {
+    earthGroup?.remove(light)
+    disposeObject(light)
+  })
   disposeObject(routeLine)
   disposeObject(aircraft)
   disposeObject(nightLayer)
@@ -823,8 +990,10 @@ export const destroyGlobe = () => {
   renderer?.dispose?.()
   scene = camera = renderer = earthGroup = globe = nightLayer = aircraft = routeLine = null
   routeMarkers = []
+  routeSamples = []
   routePoints = []
   mapLabels = []
+  cityLights = []
   aircraftState = null
   earthTexture = null
   interactionCleanup = null
