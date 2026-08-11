@@ -35,15 +35,11 @@ const resolveAirport = async value => {
   const query = clean(value).toUpperCase()
   if (!query) return null
 
-  if (/^[A-Z0-9]{4}$/.test(query)) {
-    return { icao: query, iata: '', name: query }
-  }
+  if (/^[A-Z0-9]{4}$/.test(query)) return { icao: query, iata: '', name: query }
 
   if (/^[A-Z]{3}$/.test(query)) {
     try {
-      const response = await fetch(`${AIRPORT_DATA_BASE}?iata=${encodeURIComponent(query)}`, {
-        headers: { Accept: 'application/json' }
-      })
+      const response = await fetch(`${AIRPORT_DATA_BASE}?iata=${encodeURIComponent(query)}`, { headers: { Accept: 'application/json' } })
       if (response.ok) {
         const airport = await response.json()
         if (airport?.status === 200 && airport?.icao) {
@@ -125,6 +121,12 @@ const normalizeNodes = plan => (plan?.route?.nodes || [])
     via: node.via || null
   }))
 
+const previewNodes = nodes => (nodes || []).map(node => ({
+  ident: node.ident || '',
+  lat: Number(node.lat),
+  lon: Number(node.lon)
+}))
+
 const calculateBearing = (a, b) => {
   const lat1 = Number(a.lat) * Math.PI / 180
   const lat2 = Number(b.lat) * Math.PI / 180
@@ -140,8 +142,7 @@ const distanceNmBetween = (a, b) => {
   const lat2 = Number(b.lat) * Math.PI / 180
   const dLat = (Number(b.lat) - Number(a.lat)) * Math.PI / 180
   const dLon = (Number(b.lon) - Number(a.lon)) * Math.PI / 180
-  const h = Math.sin(dLat / 2) ** 2
-    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
   return 2 * radiusNm * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)))
 }
 
@@ -155,16 +156,13 @@ const routeShapeSamples = nodes => {
 
 const routesEquivalent = (a, b) => {
   if (a.fromICAO !== b.fromICAO || a.toICAO !== b.toICAO) return false
-
   const distanceA = Number(a.distanceNm || 0)
   const distanceB = Number(b.distanceNm || 0)
   const distanceTolerance = Math.max(12, Math.min(distanceA, distanceB) * 0.012)
   if (Math.abs(distanceA - distanceB) > distanceTolerance) return false
-
   const samplesA = routeShapeSamples(a.routeNodesForRanking)
   const samplesB = routeShapeSamples(b.routeNodesForRanking)
   if (samplesA.length !== samplesB.length || !samplesA.length) return false
-
   const separations = samplesA.map((point, index) => distanceNmBetween(point, samplesB[index]))
   const average = separations.reduce((sum, value) => sum + value, 0) / separations.length
   const maximum = Math.max(...separations)
@@ -186,18 +184,13 @@ const routeSamples = nodes => {
   const fractions = nodes.length < 5 ? [0, 0.5] : [0.18, 0.5, 0.82]
   return fractions.map(fraction => {
     const index = Math.min(nodes.length - 2, Math.max(0, Math.round((nodes.length - 2) * fraction)))
-    return {
-      lat: nodes[index].lat,
-      lon: nodes[index].lon,
-      course: calculateBearing(nodes[index], nodes[index + 1])
-    }
+    return { lat: nodes[index].lat, lon: nodes[index].lon, course: calculateBearing(nodes[index], nodes[index + 1]) }
   })
 }
 
 const viaSummary = nodes => {
   if (!nodes || nodes.length < 5) return ''
-  const indices = [0.22, 0.42, 0.62, 0.82]
-  const candidates = indices
+  const candidates = [0.22, 0.42, 0.62, 0.82]
     .map(fraction => nodes[Math.min(nodes.length - 2, Math.max(1, Math.round((nodes.length - 1) * fraction)))]?.ident)
     .filter(Boolean)
   return [...new Set(candidates)].slice(0, 4).join(' · ')
@@ -208,23 +201,24 @@ const annotateRouteDifferences = plans => {
   const best = plans[0]
   return plans.map((plan, index) => {
     if (index === 0) return { ...plan, differenceLabel: 'Best overall match' }
-
     const parts = []
     if (plan.viaSummary && plan.viaSummary !== best.viaSummary) parts.push(`Different routing via ${plan.viaSummary}`)
     else parts.push('Different route corridor')
-
     const distanceDeltaKm = Math.round((Number(plan.distanceNm || 0) - Number(best.distanceNm || 0)) * 1.852)
     if (Math.abs(distanceDeltaKm) >= 10) parts.push(`${distanceDeltaKm > 0 ? '+' : ''}${distanceDeltaKm} km`)
-
     const wind = Number(plan.upperWindKmh)
     const bestWind = Number(best.upperWindKmh)
     if (Number.isFinite(wind) && Number.isFinite(bestWind)) {
       const windDelta = Math.round(wind - bestWind)
       if (Math.abs(windDelta) >= 10) parts.push(`${Math.abs(windDelta)} km/h ${windDelta > 0 ? 'better' : 'worse'} wind`)
     }
-
     return { ...plan, differenceLabel: parts.join(' · ') }
   })
+}
+
+const cleanRankedPlan = (plan, extra = {}) => {
+  const { routeNodesForRanking, ...cleanPlan } = plan
+  return { ...cleanPlan, previewNodes: previewNodes(routeNodesForRanking), ...extra }
 }
 
 const enrichPlansWithUpperWinds = async plans => {
@@ -242,13 +236,10 @@ const enrichPlansWithUpperWinds = async plans => {
 
   const enriched = dedupeEquivalentRoutes(enrichedCandidates, 6)
   const sampleEntries = []
-  enriched.forEach((plan, planIndex) => {
-    routeSamples(plan.routeNodesForRanking).forEach(sample => sampleEntries.push({ planIndex, ...sample }))
-  })
+  enriched.forEach((plan, planIndex) => routeSamples(plan.routeNodesForRanking).forEach(sample => sampleEntries.push({ planIndex, ...sample })))
 
   if (!sampleEntries.length) {
-    const ranked = enriched.map(({ routeNodesForRanking, ...plan }, index) => ({
-      ...plan,
+    const ranked = enriched.map((plan, index) => cleanRankedPlan(plan, {
       recommendationRank: index + 1,
       weatherLabel: 'Upper-wind data unavailable'
     }))
@@ -293,21 +284,17 @@ const enrichPlansWithUpperWinds = async plans => {
           else if (upperWindKmh <= -10) weatherLabel = `Headwind ${Math.abs(upperWindKmh)} km/h`
           else weatherLabel = 'Upper winds nearly neutral'
         }
-        const { routeNodesForRanking, ...cleanPlan } = plan
-        return {
-          ...cleanPlan,
+        return cleanRankedPlan(plan, {
           upperWindKmh,
           weatherLabel,
           recommendationScore: Number(plan.baseScore || 0) + weatherBonus - distancePenalty
-        }
+        })
       })
       .sort((a, b) => Number(b.recommendationScore || b.baseScore || 0) - Number(a.recommendationScore || a.baseScore || 0))
       .map((plan, index) => ({ ...plan, recommendationRank: index + 1 }))
-
     return annotateRouteDifferences(ranked)
   } catch (_) {
-    const ranked = enriched.map(({ routeNodesForRanking, ...plan }, index) => ({
-      ...plan,
+    const ranked = enriched.map((plan, index) => cleanRankedPlan(plan, {
       recommendationRank: index + 1,
       weatherLabel: 'Upper-wind data unavailable'
     }))
@@ -319,10 +306,7 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
   const normalizedFlight = normalizeFlightNumber(flightNumber)
   const fromQuery = clean(from)
   const toQuery = clean(to)
-
-  if (!normalizedFlight && !fromQuery && !toQuery) {
-    throw new Error('Enter a flight number or a departure/destination pair.')
-  }
+  if (!normalizedFlight && !fromQuery && !toQuery) throw new Error('Enter a flight number or a departure/destination pair.')
 
   const [resolvedFrom, resolvedTo] = await Promise.all([
     fromQuery ? resolveAirport(fromQuery) : Promise.resolve(null),
@@ -331,16 +315,12 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
 
   const searches = []
   const errors = []
-
   if (normalizedFlight) {
     try {
       const byFlight = await requestJson(buildPlanSearchPath({ flightNumber: normalizedFlight }))
       if (Array.isArray(byFlight)) searches.push(...byFlight)
-    } catch (error) {
-      errors.push(error)
-    }
+    } catch (error) { errors.push(error) }
   }
-
   if (fromQuery && toQuery) {
     try {
       const routeParams = resolvedFrom?.icao && resolvedTo?.icao
@@ -348,11 +328,8 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
         : { from: fromQuery, to: toQuery, sort: 'popularity' }
       const byRoute = await requestJson(buildPlanSearchPath(routeParams))
       if (Array.isArray(byRoute)) searches.push(...byRoute)
-    } catch (error) {
-      errors.push(error)
-    }
+    } catch (error) { errors.push(error) }
   }
-
   if (!searches.length && errors.length && !(fromQuery && toQuery)) throw errors[0]
 
   const basePlans = dedupePlans(searches)
