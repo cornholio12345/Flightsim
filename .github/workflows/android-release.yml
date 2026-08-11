@@ -1,0 +1,189 @@
+name: Build signed Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version name (for example 0.1.0)'
+        required: true
+        default: '0.1.0'
+      version_code:
+        description: 'Version code (must increase for Play updates)'
+        required: true
+        default: '1'
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=0
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not configured as a repository Actions secret"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Create Capacitor config
+        run: |
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "com.cornholio12345.flightsim",
+            "appName": "FlightSim",
+            "webDir": "dist",
+            "plugins": {
+              "CapacitorHttp": { "enabled": true }
+            }
+          }
+          JSON
+
+      - name: Create Android project
+        run: |
+          rm -rf android
+          npx cap add android
+          npx cap sync android
+
+      - name: Enable GPS permissions and set version
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          text = manifest.read_text()
+          permissions = (
+              '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n'
+              '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
+          )
+          if 'android.permission.ACCESS_FINE_LOCATION' not in text:
+              text = text.replace('<application', permissions + '    <application', 1)
+          manifest.write_text(text)
+
+          gradle = Path('android/app/build.gradle')
+          text = gradle.read_text()
+          version_code = os.environ['VERSION_CODE']
+          version_name = os.environ['VERSION_NAME']
+          if not version_code.isdigit() or int(version_code) < 1:
+              raise SystemExit('VERSION_CODE must be a positive integer')
+          if not re.fullmatch(r'[0-9A-Za-z._-]+', version_name):
+              raise SystemExit('VERSION_NAME contains unsupported characters')
+          text, code_count = re.subn(r'versionCode\s+\d+', f'versionCode {version_code}', text, count=1)
+          text, name_count = re.subn(r'versionName\s+"[^"]+"', f'versionName "{version_name}"', text, count=1)
+          if code_count != 1 or name_count != 1:
+              raise SystemExit('Could not update Android version fields')
+          gradle.write_text(text)
+          PY
+
+      - name: Restore upload keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/flightsim-upload.jks"
+          test -s "$RUNNER_TEMP/flightsim-upload.jks"
+          chmod 600 "$RUNNER_TEMP/flightsim-upload.jks"
+
+      - name: Build unsigned release APK and AAB
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace
+
+      - name: Sign and verify release APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED="$RUNNER_TEMP/flightsim-release-aligned.apk"
+          SIGNED="$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.apk"
+          test -f "$UNSIGNED"
+          "$BUILD_TOOLS/zipalign" -f -v 4 "$UNSIGNED" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/flightsim-upload.jks" \
+            --ks-type JKS \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$SIGNED" \
+            "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$SIGNED"
+
+      - name: Sign and verify release AAB
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          UNSIGNED="android/app/build/outputs/bundle/release/app-release.aab"
+          SIGNED="$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.aab"
+          test -f "$UNSIGNED"
+          jarsigner \
+            -keystore "$RUNNER_TEMP/flightsim-upload.jks" \
+            -storetype JKS \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -keypass "$ANDROID_KEY_PASSWORD" \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -signedjar "$SIGNED" \
+            "$UNSIGNED" \
+            "$ANDROID_KEY_ALIAS"
+          jarsigner -verify -verbose -certs "$SIGNED"
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          cp "$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.apk" release/
+          cp "$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.aab" release/
+          ls -lh release/
+
+      - name: Upload signed release
+        uses: actions/upload-artifact@v4
+        with:
+          name: flightsim-${{ inputs.version_name }}-release
+          path: release/*
+          retention-days: 30
+          if-no-files-found: error
