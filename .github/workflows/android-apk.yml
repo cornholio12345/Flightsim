@@ -29,18 +29,29 @@ jobs:
 
       - name: Install Android SDK tools
         run: |
+          set -euo pipefail
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          cd "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$RUNNER_TEMP"
           curl -sS -L https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
-          unzip -q cmdline-tools.zip
+          unzip -q -o cmdline-tools.zip
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          if [ -d "cmdline-tools" ]; then
+            mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
+          else
+            # If zip unpacks without a top-level cmdline-tools directory
+            mv * "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
+          fi
+          chmod +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" || true
+          echo "SDK layout at $ANDROID_SDK_ROOT (top entries):"
+          ls -al "$ANDROID_SDK_ROOT" || true
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses <<< "y" || true
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
       - name: Find package.json and install dependencies
         id: js
         run: |
+          set -euo pipefail
           if [ -f package.json ]; then
             proj_dir="."
           else
@@ -56,12 +67,28 @@ jobs:
 
       - name: Build web assets
         run: |
+          set -euo pipefail
           cd "${{ steps.js.outputs.project_dir }}"
           npm run build --if-present || npm run build
+
+      - name: Prepare Android project (Capacitor/Cordova)
+        run: |
+          set -euo pipefail
+          cd "${{ steps.js.outputs.project_dir }}"
+          if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ]; then
+            npx cap sync android || true
+          fi
+          if [ -f "config.xml" ] && [ -d "www" ]; then
+            if ! command -v cordova >/dev/null 2>&1; then
+              npm i -g cordova
+            fi
+            cordova platform add android --no-update || true
+          fi
 
       - name: Locate android directory
         id: findandroid
         run: |
+          set -euo pipefail
           if [ -d android ]; then
             ad="android"
           elif [ -d "${{ steps.js.outputs.project_dir }}/android" ]; then
@@ -78,12 +105,14 @@ jobs:
       - name: Build Android (Gradle)
         working-directory: ${{ steps.findandroid.outputs.android_dir }}
         run: |
+          set -euo pipefail
           chmod +x ./gradlew || true
           ./gradlew clean assembleRelease --no-daemon
 
       - name: Find APK and upload
         id: findapk
         run: |
+          set -euo pipefail
           android_dir="${{ steps.findandroid.outputs.android_dir }}"
           unsigned=$(find "$android_dir" -type f -path "*/outputs/apk/*/app-*-unsigned.apk" -print -quit || true)
           if [ -z "$unsigned" ]; then
