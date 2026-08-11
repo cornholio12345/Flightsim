@@ -9,8 +9,6 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    env:
-      ANDROID_SDK_ROOT: $RUNNER_TEMP/android-sdk
 
     steps:
       - name: Checkout repo
@@ -27,26 +25,20 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Install Android SDK tools
+      - name: Setup Android SDK (google-github-actions)
+        uses: google-github-actions/setup-android@v2
+        with:
+          api-levels: '33'
+          build-tools: '33.0.2'
+          components: |
+            platform-tools
+          cache: true
+
+      - name: Verify Android SDK layout
         run: |
-          set -euo pipefail
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          cd "$RUNNER_TEMP"
-          curl -sS -L https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
-          unzip -q -o cmdline-tools.zip
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          if [ -d "cmdline-tools" ]; then
-            mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
-          else
-            # If zip unpacks without a top-level cmdline-tools directory
-            mv * "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || true
-          fi
-          chmod +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" || true
-          echo "SDK layout at $ANDROID_SDK_ROOT (top entries):"
-          ls -al "$ANDROID_SDK_ROOT" || true
-          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses <<< "y" || true
-          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -al "$ANDROID_HOME" || ls -al "$ANDROID_SDK_ROOT"
 
       - name: Find package.json and install dependencies
         id: js
@@ -101,6 +93,7 @@ jobs:
             exit 1
           fi
           echo "android_dir=$ad" >> "$GITHUB_OUTPUT"
+          echo "Found android_dir=$ad"
 
       - name: Build Android (Gradle)
         working-directory: ${{ steps.findandroid.outputs.android_dir }}
