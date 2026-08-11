@@ -118,7 +118,7 @@ Route data stored in IndexedDB:
 
 ## Contributing
 
-Pull requests welcome! Please ensure offline functionality is maintained.
+Pull requests are welcome! Please ensure offline functionality is maintained.
 
 ## License
 
