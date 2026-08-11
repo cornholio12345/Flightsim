@@ -29,6 +29,80 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.detail-map-container {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: #07121a;
+}
+
+.map-mode-switch {
+  position: absolute;
+  z-index: 35;
+  left: 14px;
+  top: 14px;
+  display: flex;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(4, 15, 22, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(10px);
+}
+
+.map-mode-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: #a1b5bf;
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.map-mode-button.active {
+  color: #92e9c2;
+  background: rgba(44, 151, 109, 0.25);
+}
+
+.map-mode-button.needs-online {
+  color: #ffd185;
+  background: rgba(185, 119, 38, 0.22);
+}
+
+.detail-plane-marker {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 23px;
+  line-height: 1;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.85);
+  filter: drop-shadow(0 0 3px rgba(117, 239, 185, 0.75));
+  pointer-events: none;
+}
+
+.detail-plane-marker span {
+  display: block;
+  transform: rotate(0deg);
+}
+
+.detail-map-container .maplibregl-ctrl-bottom-left {
+  z-index: 8;
+  font-size: 9px;
+}
+
+.detail-map-container .maplibregl-ctrl-bottom-right {
+  z-index: 8;
+  margin-bottom: 8px;
+  margin-right: 8px;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
 }
