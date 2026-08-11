@@ -62,6 +62,25 @@ const resolveAirport = async value => {
   return { icao: '', iata: '', name: clean(value), query: clean(value) }
 }
 
+const fetchAirportMetadata = async icao => {
+  if (!icao) return null
+  try {
+    const airport = await requestJson(`/nav/airport/${encodeURIComponent(icao)}`)
+    return {
+      icao: airport?.ICAO || icao,
+      iata: airport?.IATA || '',
+      name: airport?.name || icao,
+      regionName: airport?.regionName || '',
+      timeZone: airport?.timezone?.name || '',
+      utcOffsetSeconds: Number(airport?.timezone?.offset || 0),
+      lat: Number(airport?.lat),
+      lon: Number(airport?.lon)
+    }
+  } catch (_) {
+    return null
+  }
+}
+
 const freshnessScore = updatedAt => {
   const timestamp = Date.parse(updatedAt || '')
   if (!Number.isFinite(timestamp)) return 0
@@ -149,9 +168,6 @@ const routesEquivalent = (a, b) => {
   const separations = samplesA.map((point, index) => distanceNmBetween(point, samplesB[index]))
   const average = separations.reduce((sum, value) => sum + value, 0) / separations.length
   const maximum = Math.max(...separations)
-
-  // Same corridor with only tiny waypoint/database differences: show one result.
-  // A genuinely different airway/corridor stays visible even when endpoints match.
   return average <= 18 && maximum <= 42
 }
 
@@ -194,11 +210,8 @@ const annotateRouteDifferences = plans => {
     if (index === 0) return { ...plan, differenceLabel: 'Best overall match' }
 
     const parts = []
-    if (plan.viaSummary && plan.viaSummary !== best.viaSummary) {
-      parts.push(`Different routing via ${plan.viaSummary}`)
-    } else {
-      parts.push('Different route corridor')
-    }
+    if (plan.viaSummary && plan.viaSummary !== best.viaSummary) parts.push(`Different routing via ${plan.viaSummary}`)
+    else parts.push('Different route corridor')
 
     const distanceDeltaKm = Math.round((Number(plan.distanceNm || 0) - Number(best.distanceNm || 0)) * 1.852)
     if (Math.abs(distanceDeltaKm) >= 10) parts.push(`${distanceDeltaKm > 0 ? '+' : ''}${distanceDeltaKm} km`)
@@ -227,10 +240,7 @@ const enrichPlansWithUpperWinds = async plans => {
     }
   }))
 
-  // Candidates are already ordered by base quality. Keep the best representative
-  // of each actual route corridor, not six database records describing the same path.
   const enriched = dedupeEquivalentRoutes(enrichedCandidates, 6)
-
   const sampleEntries = []
   enriched.forEach((plan, planIndex) => {
     routeSamples(plan.routeNodesForRanking).forEach(sample => sampleEntries.push({ planIndex, ...sample }))
@@ -296,12 +306,11 @@ const enrichPlansWithUpperWinds = async plans => {
 
     return annotateRouteDifferences(ranked)
   } catch (_) {
-    const ranked = enriched
-      .map(({ routeNodesForRanking, ...plan }, index) => ({
-        ...plan,
-        recommendationRank: index + 1,
-        weatherLabel: 'Upper-wind data unavailable'
-      }))
+    const ranked = enriched.map(({ routeNodesForRanking, ...plan }, index) => ({
+      ...plan,
+      recommendationRank: index + 1,
+      weatherLabel: 'Upper-wind data unavailable'
+    }))
     return annotateRouteDifferences(ranked)
   }
 }
@@ -371,8 +380,6 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
       }
     })
     .sort((a, b) => b.baseScore - a.baseScore)
-    // Look at more candidates than we display so duplicate records do not crowd
-    // out genuinely different route alternatives further down the upstream list.
     .slice(0, 14)
 
   return enrichPlansWithUpperWinds(basePlans)
@@ -381,18 +388,26 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
 export const fetchFlightPlan = async id => {
   const plan = await requestJson(`/plan/${encodeURIComponent(id)}`)
   const nodes = normalizeNodes(plan)
+  if (nodes.length < 2) throw new Error('The selected flight plan does not contain a usable route.')
 
-  if (nodes.length < 2) {
-    throw new Error('The selected flight plan does not contain a usable route.')
-  }
+  const [fromAirport, toAirport] = await Promise.all([
+    fetchAirportMetadata(plan.fromICAO),
+    fetchAirportMetadata(plan.toICAO)
+  ])
 
   return {
     id: plan.id,
     flightNumber: plan.flightNumber || '',
     fromICAO: plan.fromICAO,
     toICAO: plan.toICAO,
-    fromName: plan.fromName || plan.fromICAO,
-    toName: plan.toName || plan.toICAO,
+    fromIATA: fromAirport?.iata || '',
+    toIATA: toAirport?.iata || '',
+    fromName: plan.fromName || fromAirport?.name || plan.fromICAO,
+    toName: plan.toName || toAirport?.name || plan.toICAO,
+    fromRegionName: fromAirport?.regionName || '',
+    toRegionName: toAirport?.regionName || '',
+    fromTimeZone: fromAirport?.timeZone || '',
+    toTimeZone: toAirport?.timeZone || '',
     distanceNm: Number(plan.distance || 0),
     maxAltitudeFt: Number(plan.maxAltitude || 0),
     updatedAt: plan.updatedAt || null,
