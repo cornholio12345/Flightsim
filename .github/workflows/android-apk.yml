@@ -1,126 +1,92 @@
-name: Android APK Build (unsigned)
+name: Build Android debug APK
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
+      - 'agent/**'
+
+permissions:
+  contents: read
 
 jobs:
-  build-apk:
+  build-debug-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: '22'
 
-      - name: Install Java
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '21'
 
-      - name: Setup Android SDK (google-github-actions)
-        uses: google-github-actions/setup-android@v2
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
         with:
-          api-levels: '33'
-          build-tools: '33.0.2'
-          components: |
-            platform-tools
-          cache: true
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Verify Android SDK layout
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Create Capacitor config
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -al "$ANDROID_HOME" || ls -al "$ANDROID_SDK_ROOT"
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "com.cornholio12345.flightsim",
+            "appName": "FlightSim",
+            "webDir": "dist",
+            "plugins": {
+              "CapacitorHttp": { "enabled": true }
+            }
+          }
+          JSON
 
-      - name: Find package.json and install dependencies
-        id: js
+      - name: Create Android project
         run: |
-          set -euo pipefail
-          if [ -f package.json ]; then
-            proj_dir="."
-          else
-            proj_dir=$(find . -maxdepth 2 -name package.json -printf '%h\n' | head -n1 || true)
-          fi
-          if [ -z "$proj_dir" ]; then
-            echo "No package.json found" >&2
-            exit 1
-          fi
-          echo "project_dir=$proj_dir" >> "$GITHUB_OUTPUT"
-          cd "$proj_dir"
-          npm install --no-audit --no-fund
+          rm -rf android
+          npx cap add android
+          npx cap sync android
 
-      - name: Build web assets
+      - name: Enable GPS permissions
         run: |
-          set -euo pipefail
-          cd "${{ steps.js.outputs.project_dir }}"
-          npm run build --if-present || npm run build
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('android/app/src/main/AndroidManifest.xml')
+          text = path.read_text()
+          permissions = '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
+          if 'android.permission.ACCESS_FINE_LOCATION' not in text:
+              text = text.replace('<application', permissions + '    <application', 1)
+          path.write_text(text)
+          PY
 
-      - name: Prepare Android project (Capacitor/Cordova)
+      - name: Build debug APK
+        working-directory: android
         run: |
-          set -euo pipefail
-          cd "${{ steps.js.outputs.project_dir }}"
-          if [ -f "capacitor.config.ts" ] || [ -f "capacitor.config.json" ]; then
-            npx cap sync android || true
-          fi
-          if [ -f "config.xml" ] && [ -d "www" ]; then
-            if ! command -v cordova >/dev/null 2>&1; then
-              npm i -g cordova
-            fi
-            cordova platform add android --no-update || true
-          fi
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Locate android directory
-        id: findandroid
+      - name: Verify APK
         run: |
-          set -euo pipefail
-          if [ -d android ]; then
-            ad="android"
-          elif [ -d "${{ steps.js.outputs.project_dir }}/android" ]; then
-            ad="${{ steps.js.outputs.project_dir }}/android"
-          else
-            ad=$(find . -maxdepth 4 -type d -name android -print -quit || true)
-          fi
-          if [ -z "$ad" ]; then
-            echo "No android directory found" >&2
-            exit 1
-          fi
-          echo "android_dir=$ad" >> "$GITHUB_OUTPUT"
-          echo "Found android_dir=$ad"
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh android/app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Build Android (Gradle)
-        working-directory: ${{ steps.findandroid.outputs.android_dir }}
-        run: |
-          set -euo pipefail
-          chmod +x ./gradlew || true
-          ./gradlew clean assembleRelease --no-daemon
-
-      - name: Find APK and upload
-        id: findapk
-        run: |
-          set -euo pipefail
-          android_dir="${{ steps.findandroid.outputs.android_dir }}"
-          unsigned=$(find "$android_dir" -type f -path "*/outputs/apk/*/app-*-unsigned.apk" -print -quit || true)
-          if [ -z "$unsigned" ]; then
-            unsigned=$(find "$android_dir" -type f -path "*/outputs/apk/*/app-release.apk" -print -quit || true)
-          fi
-          built=$(find "$android_dir" -type f -name "*-release.apk" -print -quit || true)
-          echo "unsigned_apk=$unsigned" >> "$GITHUB_OUTPUT"
-          echo "built_apk=$built" >> "$GITHUB_OUTPUT"
-          echo "unsigned: $unsigned"
-          echo "built: $built"
-
-      - name: Upload artifact (unsigned)
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk-unsigned
-          path: |
-            ${{ steps.findapk.outputs.unsigned_apk }}
-            ${{ steps.findapk.outputs.built_apk }}
+          name: flightsim-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+          if-no-files-found: error

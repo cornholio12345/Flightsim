@@ -1,101 +1,183 @@
 import * as THREE from 'three'
 
-let scene, camera, renderer, globe, aircraft
+const RADIUS = 2
+let scene
+let camera
+let renderer
+let earthGroup
+let globe
+let aircraft
+let routeLine
+let animationFrame
+let resizeObserver
 
-export const initializeGlobe = (canvasId) => {
+const disposeObject = object => {
+  if (!object) return
+  object.geometry?.dispose?.()
+  if (Array.isArray(object.material)) object.material.forEach(material => material.dispose?.())
+  else object.material?.dispose?.()
+}
+
+const latLonVector = (lat, lon, radius = RADIUS) => {
+  const phi = (90 - lat) * Math.PI / 180
+  const theta = (lon + 180) * Math.PI / 180
+  return new THREE.Vector3(
+    -radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.cos(phi),
+    radius * Math.sin(phi) * Math.sin(theta)
+  )
+}
+
+const greatCirclePoint = (a, b, t) => {
+  const va = latLonVector(a.lat, a.lon, 1).normalize()
+  const vb = latLonVector(b.lat, b.lon, 1).normalize()
+  let dot = THREE.MathUtils.clamp(va.dot(vb), -1, 1)
+  const omega = Math.acos(dot)
+  if (omega < 1e-6) return va.multiplyScalar(RADIUS + 0.025)
+  const sinOmega = Math.sin(omega)
+  return va.multiplyScalar(Math.sin((1 - t) * omega) / sinOmega)
+    .add(vb.multiplyScalar(Math.sin(t * omega) / sinOmega))
+    .normalize()
+    .multiplyScalar(RADIUS + 0.025)
+}
+
+const addGraticule = () => {
+  const material = new THREE.LineBasicMaterial({ color: 0x4e7fa3, transparent: true, opacity: 0.28 })
+  for (let lat = -60; lat <= 60; lat += 30) {
+    const points = []
+    for (let lon = -180; lon <= 180; lon += 4) points.push(latLonVector(lat, lon, RADIUS + 0.006))
+    earthGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material))
+  }
+  for (let lon = -150; lon <= 180; lon += 30) {
+    const points = []
+    for (let lat = -88; lat <= 88; lat += 4) points.push(latLonVector(lat, lon, RADIUS + 0.006))
+    earthGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material))
+  }
+}
+
+const enableDragRotation = canvas => {
+  let dragging = false
+  let previousX = 0
+  let previousY = 0
+  canvas.style.touchAction = 'none'
+
+  canvas.addEventListener('pointerdown', event => {
+    dragging = true
+    previousX = event.clientX
+    previousY = event.clientY
+    canvas.setPointerCapture?.(event.pointerId)
+  })
+  canvas.addEventListener('pointermove', event => {
+    if (!dragging || !earthGroup) return
+    const dx = event.clientX - previousX
+    const dy = event.clientY - previousY
+    previousX = event.clientX
+    previousY = event.clientY
+    earthGroup.rotation.y += dx * 0.006
+    earthGroup.rotation.x = THREE.MathUtils.clamp(earthGroup.rotation.x + dy * 0.004, -1.15, 1.15)
+  })
+  const stop = () => { dragging = false }
+  canvas.addEventListener('pointerup', stop)
+  canvas.addEventListener('pointercancel', stop)
+}
+
+export const initializeGlobe = canvasId => {
   const canvas = document.getElementById(canvasId)
   if (!canvas) return null
 
-  // Scene setup
   scene = new THREE.Scene()
-  camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.1, 10000)
-  camera.position.z = 3
+  scene.background = new THREE.Color(0x06111f)
+  camera = new THREE.PerspectiveCamera(48, 1, 0.1, 100)
+  camera.position.set(0, 0.15, 5.4)
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight)
-  renderer.setClearColor(0x000000)
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
 
-  // Create Earth globe
-  const geometry = new THREE.SphereGeometry(2, 64, 64)
-  const texture = createEarthTexture()
-  const material = new THREE.MeshPhongMaterial({ map: texture })
-  globe = new THREE.Mesh(geometry, material)
-  scene.add(globe)
+  earthGroup = new THREE.Group()
+  scene.add(earthGroup)
 
-  // Create aircraft marker
-  const aircraftGeometry = new THREE.ConeGeometry(0.05, 0.2, 8)
-  const aircraftMaterial = new THREE.MeshPhongMaterial({ color: 0xFF0000 })
-  aircraft = new THREE.Mesh(aircraftGeometry, aircraftMaterial)
-  scene.add(aircraft)
+  globe = new THREE.Mesh(
+    new THREE.SphereGeometry(RADIUS, 64, 64),
+    new THREE.MeshPhongMaterial({ color: 0x123f62, emissive: 0x061420, shininess: 18 })
+  )
+  earthGroup.add(globe)
+  addGraticule()
 
-  // Lighting
-  const light = new THREE.DirectionalLight(0xFFFFFF, 1)
+  const atmosphere = new THREE.Mesh(
+    new THREE.SphereGeometry(RADIUS + 0.035, 48, 48),
+    new THREE.MeshBasicMaterial({ color: 0x4ca7e8, transparent: true, opacity: 0.08, side: THREE.BackSide })
+  )
+  earthGroup.add(atmosphere)
+
+  aircraft = new THREE.Mesh(
+    new THREE.ConeGeometry(0.055, 0.2, 8),
+    new THREE.MeshStandardMaterial({ color: 0xffd54a, emissive: 0x7a4a00 })
+  )
+  aircraft.visible = false
+  earthGroup.add(aircraft)
+
+  scene.add(new THREE.AmbientLight(0x8ab7d8, 0.65))
+  const light = new THREE.DirectionalLight(0xffffff, 1.1)
   light.position.set(5, 3, 5)
   scene.add(light)
 
-  const ambientLight = new THREE.AmbientLight(0x404040)
-  scene.add(ambientLight)
+  const resize = () => {
+    const width = Math.max(1, canvas.clientWidth)
+    const height = Math.max(1, canvas.clientHeight)
+    renderer.setSize(width, height, false)
+    camera.aspect = width / height
+    camera.updateProjectionMatrix()
+  }
+  resizeObserver = new ResizeObserver(resize)
+  resizeObserver.observe(canvas)
+  enableDragRotation(canvas)
 
-  // Animation loop
   const animate = () => {
-    requestAnimationFrame(animate)
-    globe.rotation.y += 0.0005
+    animationFrame = requestAnimationFrame(animate)
     renderer.render(scene, camera)
   }
   animate()
 
-  // Handle window resize
-  window.addEventListener('resize', () => {
-    const width = canvas.clientWidth
-    const height = canvas.clientHeight
-    camera.aspect = width / height
-    camera.updateProjectionMatrix()
-    renderer.setSize(width, height)
-  })
-
-  return { scene, camera, renderer, globe, aircraft }
+  return { scene, camera, renderer, earthGroup }
 }
 
-export const updateAircraftPosition = (globeRenderer, lat, lon, altitude = 0) => {
+export const setRouteOnGlobe = nodes => {
+  if (!earthGroup) return
+  if (routeLine) {
+    earthGroup.remove(routeLine)
+    disposeObject(routeLine)
+    routeLine = null
+  }
+  if (!nodes || nodes.length < 2) return
+
+  const points = []
+  for (let index = 0; index < nodes.length - 1; index += 1) {
+    const start = nodes[index]
+    const end = nodes[index + 1]
+    const steps = 8
+    for (let step = 0; step < steps; step += 1) points.push(greatCirclePoint(start, end, step / steps))
+  }
+  points.push(latLonVector(nodes[nodes.length - 1].lat, nodes[nodes.length - 1].lon, RADIUS + 0.025))
+
+  routeLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(points),
+    new THREE.LineBasicMaterial({ color: 0x62e6a8, transparent: true, opacity: 0.95 })
+  )
+  earthGroup.add(routeLine)
+}
+
+export const updateAircraftPosition = (lat, lon, altitudeFt = 0) => {
   if (!aircraft) return
-
-  // Convert lat/lon to 3D coordinates on sphere
-  const radius = 2
-  const phi = (90 - lat) * Math.PI / 180
-  const theta = (lon + 180) * Math.PI / 180
-
-  const x = -(radius + altitude / 100000) * Math.sin(phi) * Math.cos(theta)
-  const y = (radius + altitude / 100000) * Math.cos(phi)
-  const z = (radius + altitude / 100000) * Math.sin(phi) * Math.sin(theta)
-
-  aircraft.position.set(x, y, z)
-  aircraft.lookAt(0, 0, 0)
+  const visualAltitude = Math.min(0.14, Math.max(0.035, Number(altitudeFt || 0) / 300000))
+  const position = latLonVector(lat, lon, RADIUS + visualAltitude)
+  aircraft.position.copy(position)
+  aircraft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), position.clone().normalize())
+  aircraft.visible = true
 }
 
-const createEarthTexture = () => {
-  const canvas = document.createElement('canvas')
-  canvas.width = 2048
-  canvas.height = 1024
-  const ctx = canvas.getContext('2d')
-
-  // Ocean color
-  ctx.fillStyle = '#1a3a52'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-  // Land color
-  ctx.fillStyle = '#2d5016'
-  
-  // Simple land masses (very simplified)
-  const landRegions = [
-    { x: 200, y: 300, w: 300, h: 200 }, // North America
-    { x: 600, y: 350, w: 200, h: 150 }, // Europe
-    { x: 1000, y: 400, w: 250, h: 180 }, // Asia
-    { x: 900, y: 600, w: 180, h: 120 }, // Australia
-  ]
-
-  landRegions.forEach(region => {
-    ctx.fillRect(region.x, region.y, region.w, region.h)
-  })
-
-  return new THREE.CanvasTexture(canvas)
+export const destroyGlobe = () => {
+  if (animationFrame) cancelAnimationFrame(animationFrame)
+  resizeObserver?.disconnect?.()
+  renderer?.dispose?.()
+  scene = camera = renderer = earthGroup = globe = aircraft = routeLine = null
 }
