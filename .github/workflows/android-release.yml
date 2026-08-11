@@ -11,6 +11,11 @@ on:
         description: 'Version code (must increase for Play updates)'
         required: true
         default: '1'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/release-trigger'
 
 permissions:
   contents: read
@@ -19,6 +24,9 @@ jobs:
   build-release:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      RELEASE_VERSION_NAME: ${{ inputs.version_name || '0.1.0' }}
+      RELEASE_VERSION_CODE: ${{ inputs.version_code || '1' }}
 
     steps:
       - name: Checkout
@@ -81,8 +89,8 @@ jobs:
 
       - name: Enable GPS permissions and set version
         env:
-          VERSION_NAME: ${{ inputs.version_name }}
-          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ env.RELEASE_VERSION_NAME }}
+          VERSION_CODE: ${{ env.RELEASE_VERSION_CODE }}
         run: |
           python3 - <<'PY'
           import os
@@ -135,7 +143,7 @@ jobs:
           BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
           UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           ALIGNED="$RUNNER_TEMP/flightsim-release-aligned.apk"
-          SIGNED="$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.apk"
+          SIGNED="$RUNNER_TEMP/flightsim-${RELEASE_VERSION_NAME}-release.apk"
           test -f "$UNSIGNED"
           "$BUILD_TOOLS/zipalign" -f -v 4 "$UNSIGNED" "$ALIGNED"
           "$BUILD_TOOLS/apksigner" sign \
@@ -153,7 +161,7 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           UNSIGNED="android/app/build/outputs/bundle/release/app-release.aab"
-          SIGNED="$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.aab"
+          SIGNED="$RUNNER_TEMP/flightsim-${RELEASE_VERSION_NAME}-release.aab"
           test -f "$UNSIGNED"
           jarsigner \
             -keystore "$RUNNER_TEMP/flightsim-upload.jks" \
@@ -170,14 +178,14 @@ jobs:
       - name: Collect release files
         run: |
           mkdir -p release
-          cp "$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.apk" release/
-          cp "$RUNNER_TEMP/flightsim-${{ inputs.version_name }}-release.aab" release/
+          cp "$RUNNER_TEMP/flightsim-${RELEASE_VERSION_NAME}-release.apk" release/
+          cp "$RUNNER_TEMP/flightsim-${RELEASE_VERSION_NAME}-release.aab" release/
           ls -lh release/
 
       - name: Upload signed release
         uses: actions/upload-artifact@v4
         with:
-          name: flightsim-${{ inputs.version_name }}-release
+          name: flightsim-${{ env.RELEASE_VERSION_NAME }}-release
           path: release/*
           retention-days: 30
           if-no-files-found: error
