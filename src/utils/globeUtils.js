@@ -70,13 +70,15 @@ const createAircraftMarker = () => {
   const white = new THREE.MeshStandardMaterial({ color: 0xf4f8fb, emissive: 0x22313d, roughness: 0.45, metalness: 0.08 })
   const accent = new THREE.MeshStandardMaterial({ color: 0xffd54a, emissive: 0x6f4d00, roughness: 0.4 })
 
-  const fuselage = new THREE.Mesh(new THREE.CapsuleGeometry(0.028, 0.17, 5, 8), white)
+  // Three.js r128 does not have CapsuleGeometry. A slim cylinder plus a cone
+  // gives us a recognisable aircraft fuselage without requiring a newer Three build.
+  const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.19, 10), white)
   fuselage.rotation.z = Math.PI / 2
   group.add(fuselage)
 
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.031, 0.075, 10), accent)
   nose.rotation.z = -Math.PI / 2
-  nose.position.x = 0.125
+  nose.position.x = 0.13
   group.add(nose)
 
   const wingShape = new THREE.Shape()
