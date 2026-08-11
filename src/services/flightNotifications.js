@@ -42,7 +42,6 @@ export const scheduleFlightNotifications = async (trip, milestones = []) => {
       id: ids[0],
       title,
       body: `${route} · ${durationText(trip.blockMinutes)} planned · tap FlightSim for live progress`,
-      schedule: { at: new Date(Date.now() + 1500) },
       ongoing: true,
       autoCancel: false,
       group: `flightsim-${trip.id}`,
