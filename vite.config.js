@@ -25,6 +25,23 @@ const offlineCityData = () => ({
   })`
     if (!transformed.includes(oldCityBlock)) throw new Error('Could not locate city label zoom block in globeUtils.js')
     transformed = transformed.replace(oldCityBlock, newCityBlock)
+
+    // City labels are billboard sprites. Their world position used to land at the
+    // centre of the whole 512 px label texture even though the visible city dot is
+    // drawn at x=42. That shifted every city marker away from its true coordinate,
+    // while the independent night-light sprite stayed on the real coordinate.
+    // Anchor the city sprite on its dot and use the same radius as the light layer.
+    const oldLabelAnchor = `  const sprite = new THREE.Sprite(material)
+  sprite.position.copy(latLonVector(lat, lon, RADIUS + 0.034))
+  sprite.renderOrder = 8`
+    const newLabelAnchor = `  const sprite = new THREE.Sprite(material)
+  const cityLabel = kind === 'city'
+  sprite.position.copy(latLonVector(lat, lon, cityLabel ? RADIUS + 0.038 : RADIUS + 0.034))
+  if (cityLabel) sprite.center.set(42 / 512, 0.5)
+  sprite.renderOrder = cityLabel ? 10 : 8`
+    if (!transformed.includes(oldLabelAnchor)) throw new Error('Could not locate map label anchor block in globeUtils.js')
+    transformed = transformed.replace(oldLabelAnchor, newLabelAnchor)
+
     return { code: transformed, map: null }
   }
 })
