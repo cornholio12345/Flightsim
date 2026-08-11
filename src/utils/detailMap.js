@@ -1,21 +1,18 @@
-import maplibregl from 'maplibre-gl'
-import 'maplibre-gl/dist/maplibre-gl.css'
-
-const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty'
-const ROUTE_SOURCE = 'flightsim-route'
-const ROUTE_REMAINING = 'flightsim-route-remaining'
-const ROUTE_FLOWN = 'flightsim-route-flown'
-const ALTERNATIVES_SOURCE = 'flightsim-alternatives'
-const ALTERNATIVES_LAYER = 'flightsim-alternatives-layer'
-const AIRPORTS_SOURCE = 'flightsim-airports'
-const AIRPORTS_CIRCLES = 'flightsim-airport-circles'
-const AIRPORTS_LABELS = 'flightsim-airport-labels'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 
 let map
+let tileLayer
+let routeBase
+let routeRemaining
+let routeFlown
+let alternativeLayer
+let airportLayer
 let planeMarker
 let routeSamples = []
 let selectedAlternativeId = null
-let pending = []
+let alternativeLines = new Map()
+let readyNotified = false
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const toRad = value => Number(value) * Math.PI / 180
@@ -78,90 +75,61 @@ const samplesForNodes = nodes => {
   return samples
 }
 
-const routeFeature = coordinates => ({
-  type: 'Feature',
-  properties: {},
-  geometry: { type: 'LineString', coordinates }
+const latLng = coord => [Number(coord[1]), Number(coord[0])]
+const latLngs = samples => samples.map(item => latLng(item.coord))
+
+const removeLayer = layer => {
+  try { layer?.remove?.() } catch (_) { /* no-op */ }
+}
+
+const clearRouteLayers = () => {
+  removeLayer(routeBase)
+  removeLayer(routeRemaining)
+  removeLayer(routeFlown)
+  removeLayer(airportLayer)
+  routeBase = routeRemaining = routeFlown = airportLayer = null
+}
+
+const clearAlternativeLayers = () => {
+  removeLayer(alternativeLayer)
+  alternativeLayer = null
+  alternativeLines = new Map()
+}
+
+const planeIcon = () => L.divIcon({
+  className: 'detail-plane-leaflet-icon',
+  html: '<span>✈</span>',
+  iconSize: [32, 32],
+  iconAnchor: [16, 16]
 })
 
-const emptyLine = () => routeFeature([[0, 0], [0, 0]])
-
-const runWhenReady = fn => {
-  if (!map) return
-  if (map.isStyleLoaded()) fn()
-  else pending.push(fn)
+const endpointMarker = (node, label, color) => {
+  const marker = L.circleMarker([Number(node.lat), Number(node.lon)], {
+    radius: 5,
+    color: '#07131b',
+    weight: 2,
+    fillColor: color,
+    fillOpacity: 1,
+    interactive: false
+  })
+  marker.bindTooltip(String(label), {
+    permanent: true,
+    direction: 'bottom',
+    offset: [0, 7],
+    className: 'detail-airport-label'
+  })
+  return marker
 }
 
-const flushPending = () => {
-  const work = pending
-  pending = []
-  work.forEach(fn => {
-    try { fn() } catch (_) { /* map may have been switched while loading */ }
+const updateAlternativePaint = () => {
+  alternativeLines.forEach((line, id) => {
+    const selected = id === (selectedAlternativeId || '')
+    line.setStyle({
+      color: selected ? '#78ecba' : '#6c93aa',
+      opacity: selected ? 0.95 : 0.38,
+      weight: selected ? 4 : 2
+    })
   })
-}
-
-const ensureSources = () => {
-  if (!map || !map.isStyleLoaded()) return
-  if (!map.getSource(ROUTE_SOURCE)) map.addSource(ROUTE_SOURCE, { type: 'geojson', data: emptyLine() })
-  if (!map.getSource(ROUTE_REMAINING)) map.addSource(ROUTE_REMAINING, { type: 'geojson', data: emptyLine() })
-  if (!map.getSource(ROUTE_FLOWN)) map.addSource(ROUTE_FLOWN, { type: 'geojson', data: emptyLine() })
-  if (!map.getSource(ALTERNATIVES_SOURCE)) map.addSource(ALTERNATIVES_SOURCE, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  if (!map.getSource(AIRPORTS_SOURCE)) map.addSource(AIRPORTS_SOURCE, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-
-  if (!map.getLayer(ALTERNATIVES_LAYER)) map.addLayer({
-    id: ALTERNATIVES_LAYER,
-    type: 'line',
-    source: ALTERNATIVES_SOURCE,
-    paint: {
-      'line-color': ['case', ['==', ['get', 'id'], selectedAlternativeId || ''], '#78ecba', '#6c93aa'],
-      'line-opacity': ['case', ['==', ['get', 'id'], selectedAlternativeId || ''], 0.95, 0.38],
-      'line-width': ['case', ['==', ['get', 'id'], selectedAlternativeId || ''], 4, 2]
-    }
-  })
-  if (!map.getLayer('flightsim-route-base')) map.addLayer({
-    id: 'flightsim-route-base',
-    type: 'line',
-    source: ROUTE_SOURCE,
-    paint: { 'line-color': '#88a9b3', 'line-opacity': 0.5, 'line-width': 2.2 }
-  })
-  if (!map.getLayer('flightsim-route-remaining')) map.addLayer({
-    id: 'flightsim-route-remaining',
-    type: 'line',
-    source: ROUTE_REMAINING,
-    paint: { 'line-color': '#85a7b0', 'line-opacity': 0.62, 'line-width': 3 }
-  })
-  if (!map.getLayer('flightsim-route-flown')) map.addLayer({
-    id: 'flightsim-route-flown',
-    type: 'line',
-    source: ROUTE_FLOWN,
-    paint: { 'line-color': '#75efb9', 'line-opacity': 1, 'line-width': 4, 'line-dasharray': [1.5, 1.1] }
-  })
-  if (!map.getLayer(AIRPORTS_CIRCLES)) map.addLayer({
-    id: AIRPORTS_CIRCLES,
-    type: 'circle',
-    source: AIRPORTS_SOURCE,
-    paint: { 'circle-radius': 5, 'circle-color': ['get', 'color'], 'circle-stroke-width': 2, 'circle-stroke-color': '#07131b' }
-  })
-  if (!map.getLayer(AIRPORTS_LABELS)) map.addLayer({
-    id: AIRPORTS_LABELS,
-    type: 'symbol',
-    source: AIRPORTS_SOURCE,
-    layout: {
-      'text-field': ['get', 'label'],
-      'text-size': 13,
-      'text-offset': [0, 1.05],
-      'text-anchor': 'top',
-      'text-allow-overlap': true
-    },
-    paint: { 'text-color': '#f5faf8', 'text-halo-color': '#061018', 'text-halo-width': 1.5, 'text-opacity': 0.78 }
-  })
-}
-
-const planeElement = () => {
-  const element = document.createElement('div')
-  element.className = 'detail-plane-marker'
-  element.innerHTML = '<span>✈</span>'
-  return element
 }
 
 export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
@@ -173,96 +141,127 @@ export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
   }
 
   try {
-    map = new maplibregl.Map({
-      container,
-      style: STYLE_URL,
-      center: [8.68, 50.11],
-      zoom: 2.1,
-      minZoom: 1,
-      maxZoom: 17,
+    readyNotified = false
+    map = L.map(container, {
+      zoomControl: true,
       attributionControl: true,
-      canvasContextAttributes: { antialias: true },
-      renderWorldCopies: false
+      preferCanvas: true,
+      worldCopyJump: true,
+      minZoom: 2,
+      maxZoom: 18
+    }).setView([50.11, 8.68], 3)
+
+    tileLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      minZoom: 2,
+      maxZoom: 18,
+      crossOrigin: true,
+      attribution: '&copy; OpenStreetMap contributors'
+    })
+
+    const notifyReady = () => {
+      if (readyNotified) return
+      readyNotified = true
+      onReady?.()
+    }
+
+    tileLayer.once('load', notifyReady)
+    tileLayer.on('tileerror', event => {
+      onError?.(event?.error || new Error('Detail map tile failed to load.'))
+    })
+    tileLayer.addTo(map)
+
+    map.whenReady(() => {
+      try { map?.invalidateSize(false) } catch (_) { /* no-op */ }
     })
   } catch (error) {
+    try { map?.remove() } catch (_) { /* no-op */ }
     map = null
+    tileLayer = null
     onError?.(error)
     return null
   }
 
-  map.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), 'bottom-right')
-  map.on('style.load', () => {
-    ensureSources()
-    flushPending()
-  })
-  map.once('load', () => {
-    try { map?.resize() } catch (_) { /* no-op */ }
-    onReady?.()
-  })
-  map.on('error', event => onError?.(event?.error || event))
-  planeMarker = new maplibregl.Marker({ element: planeElement(), rotationAlignment: 'map', pitchAlignment: 'map' })
   return map
 }
 
 export const setDetailRoute = (nodes, labels = {}) => {
   routeSamples = samplesForNodes(nodes)
-  if (!routeSamples.length) return
-  runWhenReady(() => {
-    ensureSources()
-    map.getSource(ROUTE_SOURCE)?.setData(routeFeature(routeSamples.map(item => item.coord)))
-    map.getSource(ROUTE_REMAINING)?.setData(routeFeature(routeSamples.map(item => item.coord)))
-    map.getSource(ROUTE_FLOWN)?.setData(routeFeature([routeSamples[0].coord, routeSamples[0].coord]))
-    map.getSource(ALTERNATIVES_SOURCE)?.setData({ type: 'FeatureCollection', features: [] })
-    const start = nodes[0]
-    const end = nodes[nodes.length - 1]
-    map.getSource(AIRPORTS_SOURCE)?.setData({
-      type: 'FeatureCollection',
-      features: [
-        { type: 'Feature', properties: { label: labels.fromLabel || start.ident || 'DEP', color: '#ffd65d' }, geometry: { type: 'Point', coordinates: [Number(start.lon), Number(start.lat)] } },
-        { type: 'Feature', properties: { label: labels.toLabel || end.ident || 'ARR', color: '#83efc0' }, geometry: { type: 'Point', coordinates: [Number(end.lon), Number(end.lat)] } }
-      ]
-    })
-    const bounds = new maplibregl.LngLatBounds()
-    routeSamples.forEach(item => bounds.extend(item.coord))
-    map.fitBounds(bounds, { padding: 55, duration: 550, maxZoom: 5 })
-  })
+  if (!map || !routeSamples.length) return
+
+  clearRouteLayers()
+  clearAlternativeLayers()
+  const coords = latLngs(routeSamples)
+
+  routeBase = L.polyline(coords, {
+    color: '#88a9b3',
+    opacity: 0.5,
+    weight: 2.2,
+    interactive: false
+  }).addTo(map)
+  routeRemaining = L.polyline(coords, {
+    color: '#85a7b0',
+    opacity: 0.62,
+    weight: 3,
+    interactive: false
+  }).addTo(map)
+  routeFlown = L.polyline([coords[0], coords[0]], {
+    color: '#75efb9',
+    opacity: 1,
+    weight: 4,
+    dashArray: '7 5',
+    interactive: false
+  }).addTo(map)
+
+  const start = nodes[0]
+  const end = nodes[nodes.length - 1]
+  airportLayer = L.layerGroup([
+    endpointMarker(start, labels.fromLabel || start.ident || 'DEP', '#ffd65d'),
+    endpointMarker(end, labels.toLabel || end.ident || 'ARR', '#83efc0')
+  ]).addTo(map)
+
+  try {
+    map.fitBounds(L.latLngBounds(coords), { padding: [55, 55], maxZoom: 5, animate: false })
+  } catch (_) { /* no-op */ }
 }
 
 export const setDetailRouteAlternatives = (plans, selectedId = null) => {
   selectedAlternativeId = selectedId ? String(selectedId) : null
-  const viable = (plans || []).filter(plan => plan?.previewNodes?.length >= 2)
-  runWhenReady(() => {
-    ensureSources()
-    const features = viable.map(plan => ({
-      type: 'Feature',
-      properties: { id: String(plan.id), rank: Number(plan.recommendationRank || 99) },
-      geometry: { type: 'LineString', coordinates: samplesForNodes(plan.previewNodes).map(item => item.coord) }
-    }))
-    map.getSource(ALTERNATIVES_SOURCE)?.setData({ type: 'FeatureCollection', features })
-    updateAlternativePaint()
-    if (features.length) {
-      const bounds = new maplibregl.LngLatBounds()
-      features.forEach(feature => feature.geometry.coordinates.forEach(coord => bounds.extend(coord)))
-      map.fitBounds(bounds, { padding: 55, duration: 500, maxZoom: 5 })
-    }
-  })
-}
+  if (!map) return
+  clearAlternativeLayers()
 
-const updateAlternativePaint = () => {
-  if (!map?.getLayer(ALTERNATIVES_LAYER)) return
-  const selected = selectedAlternativeId || ''
-  map.setPaintProperty(ALTERNATIVES_LAYER, 'line-color', ['case', ['==', ['get', 'id'], selected], '#78ecba', '#6c93aa'])
-  map.setPaintProperty(ALTERNATIVES_LAYER, 'line-opacity', ['case', ['==', ['get', 'id'], selected], 0.95, 0.38])
-  map.setPaintProperty(ALTERNATIVES_LAYER, 'line-width', ['case', ['==', ['get', 'id'], selected], 4, 2])
+  const viable = (plans || []).filter(plan => plan?.previewNodes?.length >= 2)
+  if (!viable.length) return
+
+  const group = []
+  const allCoordinates = []
+  viable.forEach(plan => {
+    const coordinates = latLngs(samplesForNodes(plan.previewNodes))
+    allCoordinates.push(...coordinates)
+    const id = String(plan.id)
+    const line = L.polyline(coordinates, {
+      color: '#6c93aa',
+      opacity: 0.38,
+      weight: 2,
+      interactive: false
+    })
+    alternativeLines.set(id, line)
+    group.push(line)
+  })
+  alternativeLayer = L.layerGroup(group).addTo(map)
+  updateAlternativePaint()
+
+  if (allCoordinates.length) {
+    try { map.fitBounds(L.latLngBounds(allCoordinates), { padding: [55, 55], maxZoom: 5, animate: false }) } catch (_) { /* no-op */ }
+  }
 }
 
 export const highlightDetailRouteAlternative = planId => {
   selectedAlternativeId = planId ? String(planId) : null
-  runWhenReady(updateAlternativePaint)
+  updateAlternativePaint()
 }
 
 export const updateDetailProgress = (progress, aircraftPosition = null) => {
-  if (!routeSamples.length) return
+  if (!map || !routeSamples.length || !routeFlown || !routeRemaining) return
   const p = clamp(Number(progress || 0), 0, 1)
   let upperIndex = routeSamples.findIndex(item => item.progress >= p)
   if (upperIndex < 0) upperIndex = routeSamples.length - 1
@@ -272,36 +271,51 @@ export const updateDetailProgress = (progress, aircraftPosition = null) => {
   const span = Math.max(1e-9, upper.progress - lower.progress)
   const local = clamp((p - lower.progress) / span, 0, 1)
   const interpolated = greatCircle(lower.coord, upper.coord, local)
-  const current = aircraftPosition ? [Number(aircraftPosition.lon), Number(aircraftPosition.lat)] : interpolated
-  runWhenReady(() => {
-    map.getSource(ROUTE_FLOWN)?.setData(routeFeature([...routeSamples.slice(0, lowerIndex + 1).map(item => item.coord), current]))
-    map.getSource(ROUTE_REMAINING)?.setData(routeFeature([current, ...routeSamples.slice(upperIndex).map(item => item.coord)]))
-  })
+  const currentCoord = aircraftPosition
+    ? [Number(aircraftPosition.lon), Number(aircraftPosition.lat)]
+    : interpolated
+  const current = latLng(currentCoord)
+  const flown = routeSamples.slice(0, lowerIndex + 1).map(item => latLng(item.coord))
+  flown.push(current)
+  const remaining = [current, ...routeSamples.slice(upperIndex).map(item => latLng(item.coord))]
+  routeFlown.setLatLngs(flown.length >= 2 ? flown : [current, current])
+  routeRemaining.setLatLngs(remaining.length >= 2 ? remaining : [current, current])
 }
 
 export const updateDetailAircraft = (lat, lon, bearing = 0, follow = false) => {
-  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return
-  runWhenReady(() => {
-    if (!planeMarker) planeMarker = new maplibregl.Marker({ element: planeElement(), rotationAlignment: 'map', pitchAlignment: 'map' })
-    planeMarker.setLngLat([Number(lon), Number(lat)]).setRotation(Number(bearing || 0) - 90).addTo(map)
-    if (follow) map.easeTo({ center: [Number(lon), Number(lat)], duration: 350 })
-  })
+  if (!map || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return
+  const position = [Number(lat), Number(lon)]
+  if (!planeMarker) {
+    planeMarker = L.marker(position, { icon: planeIcon(), interactive: false, keyboard: false }).addTo(map)
+  } else {
+    planeMarker.setLatLng(position)
+    if (!map.hasLayer(planeMarker)) planeMarker.addTo(map)
+  }
+  const element = planeMarker.getElement()?.querySelector('span')
+  if (element) element.style.transform = `rotate(${Number(bearing || 0) - 45}deg)`
+  if (follow) map.setView(position, Math.max(map.getZoom(), 5), { animate: false })
 }
 
 export const recenterDetailAircraft = (lat, lon) => {
   if (!map || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return false
-  map.easeTo({ center: [Number(lon), Number(lat)], zoom: Math.max(map.getZoom(), 5), duration: 450 })
+  map.setView([Number(lat), Number(lon)], Math.max(map.getZoom(), 5), { animate: true })
   return true
 }
 
-export const resizeDetailMap = () => { try { map?.resize() } catch (_) { /* no-op */ } }
+export const resizeDetailMap = () => {
+  try { map?.invalidateSize(false) } catch (_) { /* no-op */ }
+}
 
 export const destroyDetailMap = () => {
-  pending = []
   routeSamples = []
   selectedAlternativeId = null
+  alternativeLines = new Map()
   try { planeMarker?.remove() } catch (_) { /* no-op */ }
   planeMarker = null
+  clearRouteLayers()
+  clearAlternativeLayers()
   try { map?.remove() } catch (_) { /* no-op */ }
   map = null
+  tileLayer = null
+  readyNotified = false
 }
