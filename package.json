@@ -14,7 +14,9 @@
     "dexie": "^3.2.4",
     "pinia": "^2.1.0",
     "three": "0.128.0",
-    "vue": "^3.3.0"
+    "topojson-client": "^3.1.0",
+    "vue": "^3.3.0",
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
     "@capacitor/cli": "8.4.2",
