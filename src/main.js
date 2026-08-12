@@ -36,10 +36,11 @@ const renderPreflightMapButton = (button, trip) => {
 
   button.disabled = downloading || !navigator.onLine || Boolean(state?.complete)
   button.className = `btn small secondary preflight-map-download${state?.complete ? ' map-ready' : ''}`
-  if (downloading) button.textContent = `Downloading map… ${percent}%`
-  else if (state?.complete) button.textContent = '✓ Map ready'
-  else if (completed > 0) button.textContent = `Resume map · ${percent}%`
-  else button.textContent = 'Download map'
+  let label = 'Download map'
+  if (downloading) label = `Downloading map… ${percent}%`
+  else if (state?.complete) label = '✓ Map ready'
+  else if (completed > 0) label = `Resume map · ${percent}%`
+  if (button.textContent !== label) button.textContent = label
 }
 
 const refreshPreflightMapState = async trip => {
