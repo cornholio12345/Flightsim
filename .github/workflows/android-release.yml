@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'Version name (for example 0.1.13)'
+        description: 'Version name (for example 0.1.14)'
         required: true
-        default: '0.1.13'
+        default: '0.1.14'
       version_code:
         description: 'Version code (must increase for Play updates)'
         required: true
-        default: '14'
+        default: '15'
   push:
     branches:
       - main
@@ -25,8 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      RELEASE_VERSION_NAME: ${{ inputs.version_name || '0.1.13' }}
-      RELEASE_VERSION_CODE: ${{ inputs.version_code || '14' }}
+      RELEASE_VERSION_NAME: ${{ inputs.version_name || '0.1.14' }}
+      RELEASE_VERSION_CODE: ${{ inputs.version_code || '15' }}
 
     steps:
       - name: Checkout
