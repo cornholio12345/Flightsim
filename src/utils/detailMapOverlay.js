@@ -1,3 +1,4 @@
+import '../detailMapOfflineReady.css'
 import { getFlightState } from './routeUtils'
 import {
   destroyDetailMap,
@@ -94,6 +95,31 @@ export const mountDetailMapOverlay = store => {
   offlineCard.style.display = 'none'
   detailContainer.appendChild(offlineCard)
 
+  const offlineReadyButton = element('button', 'detail-offline-ready-delete', '×')
+  offlineReadyButton.type = 'button'
+  offlineReadyButton.setAttribute('aria-label', 'Delete offline map')
+  offlineReadyButton.setAttribute('title', 'Delete offline map')
+  offlineReadyButton.style.display = 'none'
+  detailContainer.appendChild(offlineReadyButton)
+
+  const deleteModal = element('div', 'detail-offline-delete-modal')
+  deleteModal.style.display = 'none'
+  const deleteDialog = element('div', 'detail-offline-delete-dialog')
+  deleteDialog.setAttribute('role', 'dialog')
+  deleteDialog.setAttribute('aria-modal', 'true')
+  deleteDialog.setAttribute('aria-labelledby', 'offline-map-delete-title')
+  const deleteTitle = element('strong', 'detail-offline-delete-title', 'Delete offline map?')
+  deleteTitle.id = 'offline-map-delete-title'
+  const deleteActions = element('div', 'detail-offline-delete-actions')
+  const deleteCancelButton = element('button', 'detail-offline-delete-cancel', 'Cancel')
+  deleteCancelButton.type = 'button'
+  const deleteConfirmButton = element('button', 'detail-offline-delete-confirm', 'Delete')
+  deleteConfirmButton.type = 'button'
+  deleteActions.append(deleteCancelButton, deleteConfirmButton)
+  deleteDialog.append(deleteTitle, deleteActions)
+  deleteModal.appendChild(deleteDialog)
+  detailContainer.appendChild(deleteModal)
+
   panel.insertBefore(detailContainer, panel.firstChild)
 
   const switcher = element('div', 'map-mode-switch')
@@ -124,6 +150,10 @@ export const mountDetailMapOverlay = store => {
     detailStatus.style.display = text ? 'block' : 'none'
   }
 
+  const closeDeleteModal = () => {
+    deleteModal.style.display = 'none'
+  }
+
   const renderModeUi = () => {
     const hasActiveFlight = Boolean(store.activeTrip?.route?.nodes?.length)
     globeButton.classList.toggle('active', mode === 'globe')
@@ -138,9 +168,11 @@ export const mountDetailMapOverlay = store => {
 
   const renderOfflineUi = () => {
     const trip = store.activeTrip
-    const available = mode === 'detail' && trip?.route?.nodes?.length
-    offlineCard.style.display = available ? 'block' : 'none'
-    if (!available) return
+    const available = Boolean(mode === 'detail' && trip?.route?.nodes?.length)
+    const complete = Boolean(available && offlineState?.complete)
+    offlineCard.style.display = available && !complete ? 'block' : 'none'
+    offlineReadyButton.style.display = complete ? 'grid' : 'none'
+    if (!available || complete) return
 
     offlineEstimate = offlineEstimate || estimateOfflineMapPack(trip.route.nodes)
     const downloading = Boolean(downloadController)
@@ -171,16 +203,6 @@ export const mountDetailMapOverlay = store => {
     progressBar.style.width = `${partialPercent}%`
     progressLabel.textContent = completed > 0 ? `${completed} / ${total} tiles · ${formatOfflineBytes(offlineState?.byteCount)}` : ''
 
-    if (offlineState?.complete) {
-      offlineTitle.textContent = 'Offline map ready'
-      offlineMeta.textContent = `${offlineState.tileCount} tiles · ${formatOfflineBytes(offlineState.byteCount)} · zoom ${offlineState.minZoom}–${offlineState.maxZoom} · ±${offlineState.corridorKm} km`
-      offlineBadge.textContent = offlineTest ? 'TEST OFFLINE' : 'OFFLINE READY'
-      downloadButton.style.display = 'none'
-      secondaryButton.style.display = 'inline-flex'
-      secondaryButton.textContent = 'Delete offline map'
-      return
-    }
-
     if (completed > 0) {
       offlineTitle.textContent = `Offline map · ${partialPercent}% saved`
       offlineMeta.textContent = downloadError || `Zoom ${offlineState.minZoom}–${offlineState.maxZoom} · route ±${offlineState.corridorKm} km`
@@ -205,6 +227,7 @@ export const mountDetailMapOverlay = store => {
     if (!tripId) {
       offlineState = null
       offlineEstimate = null
+      closeDeleteModal()
       renderOfflineUi()
       return
     }
@@ -227,6 +250,7 @@ export const mountDetailMapOverlay = store => {
         setDetailMapTrip(null)
         offlineState = null
         offlineEstimate = null
+        closeDeleteModal()
         renderOfflineUi()
       }
       if (mode === 'ahead') setMode('globe')
@@ -240,6 +264,7 @@ export const mountDetailMapOverlay = store => {
       downloadError = ''
       offlineState = null
       offlineEstimate = estimateOfflineMapPack(trip.route.nodes)
+      closeDeleteModal()
       setDetailMapTrip(trip.id)
       setDetailRoute(trip.route.nodes, labelsForTrip(trip))
       refreshOfflineState(trip.id)
@@ -302,6 +327,7 @@ export const mountDetailMapOverlay = store => {
     if (next === 'ahead' && !store.activeTrip?.route?.nodes?.length) next = 'globe'
     mode = next
     const detail = mode === 'detail'
+    if (!detail) closeDeleteModal()
     canvas.style.display = detail ? 'none' : 'block'
     detailContainer.style.display = detail ? 'block' : 'none'
     if (mode === 'ahead') setGlobeCameraMode('ahead')
@@ -363,6 +389,24 @@ export const mountDetailMapOverlay = store => {
     }
   }
 
+  const deleteCurrentOfflineMap = async () => {
+    const trip = store.activeTrip
+    if (!trip?.id || !offlineState?.completed || downloadController) return
+    deleteConfirmButton.disabled = true
+    deleteCancelButton.disabled = true
+    try {
+      await deleteOfflineMapPack(trip.id)
+      offlineState = null
+      downloadError = ''
+      closeDeleteModal()
+      refreshDetailMapTiles({ resetHealth: offlineTest })
+    } finally {
+      deleteConfirmButton.disabled = false
+      deleteCancelButton.disabled = false
+      renderOfflineUi()
+    }
+  }
+
   const secondaryAction = async () => {
     const trip = store.activeTrip
     if (downloadController) {
@@ -380,6 +424,20 @@ export const mountDetailMapOverlay = store => {
       secondaryButton.disabled = false
       renderOfflineUi()
     }
+  }
+
+  const openDeleteModal = () => {
+    if (!offlineState?.complete) return
+    deleteModal.style.display = 'grid'
+    window.requestAnimationFrame(() => deleteCancelButton.focus())
+  }
+
+  const onDeleteModalClick = event => {
+    if (event.target === deleteModal) closeDeleteModal()
+  }
+
+  const onDeleteModalKeydown = event => {
+    if (event.key === 'Escape' && deleteModal.style.display !== 'none') closeDeleteModal()
   }
 
   const toggleNight = () => {
@@ -407,6 +465,11 @@ export const mountDetailMapOverlay = store => {
   offlineTestButton.addEventListener('click', toggleOfflineTest)
   downloadButton.addEventListener('click', startOfflineDownload)
   secondaryButton.addEventListener('click', secondaryAction)
+  offlineReadyButton.addEventListener('click', openDeleteModal)
+  deleteCancelButton.addEventListener('click', closeDeleteModal)
+  deleteConfirmButton.addEventListener('click', deleteCurrentOfflineMap)
+  deleteModal.addEventListener('click', onDeleteModalClick)
+  window.addEventListener('keydown', onDeleteModalKeydown)
 
   const interceptFollow = event => {
     if (mode !== 'detail') return
@@ -442,6 +505,7 @@ export const mountDetailMapOverlay = store => {
     window.removeEventListener('resize', handleResize)
     window.removeEventListener('online', handleConnectivity)
     window.removeEventListener('offline', handleConnectivity)
+    window.removeEventListener('keydown', onDeleteModalKeydown)
     globeButton.removeEventListener('click', onGlobeMode)
     aheadButton.removeEventListener('click', onAheadMode)
     detailButton.removeEventListener('click', onDetailMode)
@@ -449,6 +513,10 @@ export const mountDetailMapOverlay = store => {
     offlineTestButton.removeEventListener('click', toggleOfflineTest)
     downloadButton.removeEventListener('click', startOfflineDownload)
     secondaryButton.removeEventListener('click', secondaryAction)
+    offlineReadyButton.removeEventListener('click', openDeleteModal)
+    deleteCancelButton.removeEventListener('click', closeDeleteModal)
+    deleteConfirmButton.removeEventListener('click', deleteCurrentOfflineMap)
+    deleteModal.removeEventListener('click', onDeleteModalClick)
     panel.classList.remove('detail-map-active', 'ahead-mode-active')
     setGlobeCameraMode('free')
     setDetailMapOfflineMode(false)
