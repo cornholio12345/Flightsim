@@ -75,11 +75,6 @@ jobs:
           """  globeCameraMode = requested\n  followAircraft = requested === 'follow'\n  if (requested !== 'ahead') restoreMapCameraPose()\n  if (requested === 'follow') centerCoordinate(aircraftState.lat, aircraftState.lon)\n  if (requested === 'ahead') orientAhead()"""
           )
 
-          replace_once(
-          """  followAircraft = false\n  globeCameraMode = 'free'\n}""",
-          """  followAircraft = false\n  globeCameraMode = 'free'\n  mapCameraZ = DEFAULT_CAMERA_Z\n}"""
-          )
-
           path.write_text(text)
           PY
 
