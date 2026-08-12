@@ -148,6 +148,125 @@ const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
     if (!transformed.includes(oldCityLightRadius)) throw new Error('Could not locate city light radius in globeUtils.js')
     transformed = transformed.replace(oldCityLightRadius, newCityLightRadius)
 
+    // Ahead mode is a fixed chase view: the aircraft nose is the visual focus,
+    // the Earth is only mildly tilted beneath it, and dragging cannot break the view.
+    const oldAhead = `const orientAhead = () => {
+  if (!earthGroup || !aircraftState) return false
+  const normal = latLonVector(aircraftState.lat, aircraftState.lon, 1).normalize()
+  const aheadCoord = destinationPoint(aircraftState.lat, aircraftState.lon, aircraftState.bearing, 0.05)
+  const aheadNormal = latLonVector(aheadCoord.lat, aheadCoord.lon, 1).normalize()
+  const forward = aheadNormal.clone().addScaledVector(normal, -aheadNormal.dot(normal)).normalize()
+  if (forward.lengthSq() < 1e-8) return false
+  const right = forward.clone().cross(normal).normalize()
+
+  const targetNormal = new THREE.Vector3(0, -0.34, 1).normalize()
+  const targetForward = new THREE.Vector3(0, 1, 0).addScaledVector(targetNormal, -targetNormal.y).normalize()
+  const targetRight = targetForward.clone().cross(targetNormal).normalize()
+
+  const localBasis = new THREE.Matrix4().makeBasis(right, forward, normal)
+  const targetBasis = new THREE.Matrix4().makeBasis(targetRight, targetForward, targetNormal)
+  const localQuaternion = new THREE.Quaternion().setFromRotationMatrix(localBasis)
+  const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(targetBasis)
+  earthGroup.quaternion.copy(targetQuaternion.multiply(localQuaternion.invert()))
+  return true
+}`
+    const newAhead = `const orientAhead = () => {
+  if (!earthGroup || !aircraftState) return false
+  const normal = latLonVector(aircraftState.lat, aircraftState.lon, 1).normalize()
+  const aheadCoord = destinationPoint(aircraftState.lat, aircraftState.lon, aircraftState.bearing, 0.05)
+  const aheadNormal = latLonVector(aheadCoord.lat, aheadCoord.lon, 1).normalize()
+  const forward = aheadNormal.clone().addScaledVector(normal, -aheadNormal.dot(normal)).normalize()
+  if (forward.lengthSq() < 1e-8) return false
+  const right = forward.clone().cross(normal).normalize()
+
+  // Keep the aircraft almost centered, with only a modest oblique view of the Earth.
+  const targetNormal = new THREE.Vector3(0, -0.14, 1).normalize()
+  const targetForward = new THREE.Vector3(0, 1, 0).addScaledVector(targetNormal, -targetNormal.y).normalize()
+  const targetRight = targetForward.clone().cross(targetNormal).normalize()
+
+  const localBasis = new THREE.Matrix4().makeBasis(right, forward, normal)
+  const targetBasis = new THREE.Matrix4().makeBasis(targetRight, targetForward, targetNormal)
+  const localQuaternion = new THREE.Quaternion().setFromRotationMatrix(localBasis)
+  const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(targetBasis)
+  earthGroup.quaternion.copy(targetQuaternion.multiply(localQuaternion.invert()))
+
+  if (camera) {
+    // Center the tip of the sprite rather than its geometric center.
+    const aircraftWorld = latLonVector(aircraftState.lat, aircraftState.lon, ROUTE_RADIUS)
+    earthGroup.localToWorld(aircraftWorld)
+    const noseFocus = aircraftWorld.clone().addScaledVector(targetForward, 0.028)
+    camera.position.x = 0
+    camera.position.y = 0.08
+    camera.up.set(0, 1, 0)
+    camera.lookAt(noseFocus)
+  }
+  return true
+}`
+    if (!transformed.includes(oldAhead)) throw new Error('Could not locate Ahead camera block in globeUtils.js')
+    transformed = transformed.replace(oldAhead, newAhead)
+
+    const oldSetZoom = `  const setZoom = value => {
+    if (camera) camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)
+    markInteraction()
+  }`
+    const newSetZoom = `  const setZoom = value => {
+    if (camera) camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)
+    if (globeCameraMode === 'ahead') orientAhead()
+    markInteraction()
+  }`
+    if (!transformed.includes(oldSetZoom)) throw new Error('Could not locate globe zoom handler')
+    transformed = transformed.replace(oldSetZoom, newSetZoom)
+
+    const oldDrag = `    if (!dragging || !earthGroup) return
+    const dx = event.clientX - previousX`
+    const newDrag = `    if (!dragging || !earthGroup) return
+    if (globeCameraMode === 'ahead') return
+    const dx = event.clientX - previousX`
+    if (!transformed.includes(oldDrag)) throw new Error('Could not locate globe drag handler')
+    transformed = transformed.replace(oldDrag, newDrag)
+
+    const oldCameraMode = `export const setGlobeCameraMode = mode => {
+  const requested = ['free', 'follow', 'ahead'].includes(mode) ? mode : 'free'
+  if ((requested === 'follow' || requested === 'ahead') && !aircraftState) {
+    globeCameraMode = 'free'
+    followAircraft = false
+    return globeCameraMode
+  }
+  globeCameraMode = requested
+  followAircraft = requested === 'follow'
+  if (requested === 'follow') centerCoordinate(aircraftState.lat, aircraftState.lon)
+  if (requested === 'ahead') {
+    orientAhead()
+    if (camera && camera.position.z > 3.8) camera.position.z = 3.55
+  }
+  markInteraction()
+  return globeCameraMode
+}`
+    const newCameraMode = `export const setGlobeCameraMode = mode => {
+  const requested = ['free', 'follow', 'ahead'].includes(mode) ? mode : 'free'
+  if ((requested === 'follow' || requested === 'ahead') && !aircraftState) {
+    globeCameraMode = 'free'
+    followAircraft = false
+    return globeCameraMode
+  }
+  globeCameraMode = requested
+  followAircraft = requested === 'follow'
+  if (requested !== 'ahead' && camera) {
+    const currentZoom = camera.position.z
+    camera.position.set(0, 0.08, currentZoom)
+    camera.rotation.set(0, 0, 0)
+  }
+  if (requested === 'follow') centerCoordinate(aircraftState.lat, aircraftState.lon)
+  if (requested === 'ahead') {
+    if (camera && camera.position.z > 4.2) camera.position.z = 3.9
+    orientAhead()
+  }
+  markInteraction()
+  return globeCameraMode
+}`
+    if (!transformed.includes(oldCameraMode)) throw new Error('Could not locate globe camera mode setter')
+    transformed = transformed.replace(oldCameraMode, newCameraMode)
+
     return { code: transformed, map: null }
   }
 })
