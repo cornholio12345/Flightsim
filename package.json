@@ -8,6 +8,7 @@
     "dev": "vite --config vite.ahead.config.js",
     "prebuild": "node scripts/generate-populated-places.mjs && node scripts/generate-airport-index.mjs",
     "build": "vite build --config vite.ahead.config.js",
+    "check:ahead": "node scripts/check-ahead-geometry.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
