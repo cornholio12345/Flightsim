@@ -24,8 +24,15 @@ const requestJson = async path => {
     } catch (_) {
       // Keep the HTTP status as fallback.
     }
+    const cap = response.headers.get('X-Limit-Cap')
+    const used = response.headers.get('X-Limit-Used')
+    if (response.status === 429) {
+      detail = `request limit reached${used && cap ? ` (${used}/${cap})` : ''}`
+    }
     const error = new Error(`Flight Plan Database request failed: ${detail}`)
     error.status = response.status
+    error.rateLimitCap = cap ? Number(cap) : null
+    error.rateLimitUsed = used ? Number(used) : null
     throw error
   }
   return response.json()
@@ -46,7 +53,9 @@ const resolveAirport = async value => {
           return {
             icao: String(airport.icao).toUpperCase(),
             iata: String(airport.iata || query).toUpperCase(),
-            name: airport.name || airport.location || query
+            name: airport.name || airport.location || query,
+            lat: Number(airport.latitude),
+            lon: Number(airport.longitude)
           }
         }
       }
@@ -120,6 +129,38 @@ const normalizeNodes = plan => (plan?.route?.nodes || [])
     altitudeFt: Number(node.alt || 0),
     via: node.via || null
   }))
+
+const decodePolyline = encoded => {
+  const input = String(encoded || '')
+  if (!input) return []
+  const nodes = []
+  let index = 0
+  let lat = 0
+  let lon = 0
+  const readValue = () => {
+    let result = 0
+    let shift = 0
+    let byte = 0
+    do {
+      if (index >= input.length) throw new Error('Truncated polyline')
+      byte = input.charCodeAt(index++) - 63
+      result |= (byte & 0x1f) << shift
+      shift += 5
+    } while (byte >= 0x20)
+    return (result & 1) ? ~(result >> 1) : (result >> 1)
+  }
+
+  try {
+    while (index < input.length) {
+      lat += readValue()
+      lon += readValue()
+      nodes.push({ ident: '', lat: lat / 1e5, lon: lon / 1e5 })
+    }
+  } catch (_) {
+    return []
+  }
+  return nodes
+}
 
 const previewNodes = nodes => (nodes || []).map(node => ({
   ident: node.ident || '',
@@ -224,14 +265,11 @@ const cleanRankedPlan = (plan, extra = {}) => {
 const enrichPlansWithUpperWinds = async plans => {
   if (!plans.length) return plans
 
-  const enrichedCandidates = await Promise.all(plans.map(async plan => {
-    try {
-      const full = await requestJson(`/plan/${encodeURIComponent(plan.id)}`)
-      const nodes = normalizeNodes(full)
-      return { ...plan, routeNodesForRanking: nodes, viaSummary: viaSummary(nodes) }
-    } catch (_) {
-      return plan
-    }
+  // Search responses already contain an encoded route polyline. Use that preview for
+  // ranking and winds instead of fetching every candidate plan individually.
+  const enrichedCandidates = plans.map(plan => ({
+    ...plan,
+    viaSummary: viaSummary(plan.routeNodesForRanking)
   }))
 
   const enriched = dedupeEquivalentRoutes(enrichedCandidates, 6)
@@ -315,13 +353,17 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
 
   const searches = []
   const errors = []
-  if (normalizedFlight) {
+  const hasRoutePair = Boolean(fromQuery && toQuery)
+
+  // A route pair is enough to search. Do not also spend a request on the flight-number
+  // field (which is pre-filled in the UI); matching flight numbers still score higher.
+  if (normalizedFlight && !hasRoutePair) {
     try {
       const byFlight = await requestJson(buildPlanSearchPath({ flightNumber: normalizedFlight }))
       if (Array.isArray(byFlight)) searches.push(...byFlight)
     } catch (error) { errors.push(error) }
   }
-  if (fromQuery && toQuery) {
+  if (hasRoutePair) {
     try {
       const routeParams = resolvedFrom?.icao && resolvedTo?.icao
         ? { fromICAO: resolvedFrom.icao, toICAO: resolvedTo.icao, sort: 'popularity' }
@@ -330,7 +372,7 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
       if (Array.isArray(byRoute)) searches.push(...byRoute)
     } catch (error) { errors.push(error) }
   }
-  if (!searches.length && errors.length && !(fromQuery && toQuery)) throw errors[0]
+  if (!searches.length && errors.length) throw errors[0]
 
   const basePlans = dedupePlans(searches)
     .filter(plan => plan?.id && plan?.fromICAO && plan?.toICAO)
@@ -340,7 +382,7 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
       const toIATA = resolvedTo?.icao === plan.toICAO ? resolvedTo.iata : ''
       return {
         id: plan.id,
-        flightNumber: plan.flightNumber || normalizedFlight || '',
+        flightNumber: plan.flightNumber || '',
         fromICAO: plan.fromICAO,
         toICAO: plan.toICAO,
         fromIATA,
@@ -353,11 +395,12 @@ export const searchFlightPlans = async ({ flightNumber, from, to }) => {
         tags: plan.tags || [],
         popularity: Number(plan.popularity || 0),
         updatedAt: plan.updatedAt || null,
-        baseScore
+        baseScore,
+        routeNodesForRanking: decodePolyline(plan.encodedPolyline)
       }
     })
     .sort((a, b) => b.baseScore - a.baseScore)
-    .slice(0, 14)
+    .slice(0, 10)
 
   return enrichPlansWithUpperWinds(basePlans)
 }
