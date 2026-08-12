@@ -1,0 +1,101 @@
+name: Fix Ahead camera once
+
+on:
+  push:
+    paths:
+      - .github/workflows/fix-ahead-camera-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-ahead-camera:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Patch Ahead camera
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/utils/globeUtils.js')
+          text = path.read_text()
+
+          def replace_once(old, new):
+              global text
+              if text.count(old) != 1:
+                  raise SystemExit(f'Expected exactly one match, got {text.count(old)} for:\n{old[:160]}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+          """let globeCameraMode = 'free'\nlet lastInteractionAt = Date.now()""",
+          """let globeCameraMode = 'free'\nlet mapCameraZ = DEFAULT_CAMERA_Z\nlet lastInteractionAt = Date.now()"""
+          )
+
+          replace_once(
+          """const centerCoordinate = (lat, lon) => {\n  if (!earthGroup) return\n  earthGroup.rotation.set(THREE.MathUtils.degToRad(Number(lat)), THREE.MathUtils.degToRad(-(Number(lon) + 90)), 0)\n}\n\nconst orientAhead = () => {\n  if (!earthGroup || !aircraftState) return false\n  const normal = latLonVector(aircraftState.lat, aircraftState.lon, 1).normalize()\n  const aheadCoord = destinationPoint(aircraftState.lat, aircraftState.lon, aircraftState.bearing, 0.05)\n  const aheadNormal = latLonVector(aheadCoord.lat, aheadCoord.lon, 1).normalize()\n  const forward = aheadNormal.clone().addScaledVector(normal, -aheadNormal.dot(normal)).normalize()\n  if (forward.lengthSq() < 1e-8) return false\n  const right = forward.clone().cross(normal).normalize()\n\n  const targetNormal = new THREE.Vector3(0, -0.34, 1).normalize()\n  const targetForward = new THREE.Vector3(0, 1, 0).addScaledVector(targetNormal, -targetNormal.y).normalize()\n  const targetRight = targetForward.clone().cross(targetNormal).normalize()\n\n  const localBasis = new THREE.Matrix4().makeBasis(right, forward, normal)\n  const targetBasis = new THREE.Matrix4().makeBasis(targetRight, targetForward, targetNormal)\n  const localQuaternion = new THREE.Quaternion().setFromRotationMatrix(localBasis)\n  const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(targetBasis)\n  earthGroup.quaternion.copy(targetQuaternion.multiply(localQuaternion.invert()))\n  return true\n}""",
+          """const restoreMapCameraPose = (zoom = mapCameraZ) => {\n  if (!camera) return\n  mapCameraZ = THREE.MathUtils.clamp(Number(zoom || DEFAULT_CAMERA_Z), MIN_CAMERA_Z, MAX_CAMERA_Z)\n  camera.up.set(0, 1, 0)\n  camera.position.set(0, 0.08, mapCameraZ)\n  camera.lookAt(0, 0, 0)\n}\n\nconst centerCoordinate = (lat, lon) => {\n  if (!earthGroup) return\n  earthGroup.rotation.set(THREE.MathUtils.degToRad(Number(lat)), THREE.MathUtils.degToRad(-(Number(lon) + 90)), 0)\n}\n\nconst orientAhead = () => {\n  if (!earthGroup || !aircraftState || !camera) return false\n  const normal = latLonVector(aircraftState.lat, aircraftState.lon, 1).normalize()\n  const aheadCoord = destinationPoint(aircraftState.lat, aircraftState.lon, aircraftState.bearing, 0.05)\n  const aheadNormal = latLonVector(aheadCoord.lat, aheadCoord.lon, 1).normalize()\n  const forward = aheadNormal.clone().addScaledVector(normal, -aheadNormal.dot(normal)).normalize()\n  if (forward.lengthSq() < 1e-8) return false\n  const right = forward.clone().cross(normal).normalize()\n\n  // Rotate the aircraft frame into a canonical chase-camera frame:\n  // right = +X, flight direction = +Y, surface normal = +Z.\n  // The camera then sits slightly above and behind the aircraft and looks\n  // along the route toward the horizon instead of down onto the globe.\n  const localBasis = new THREE.Matrix4().makeBasis(right, forward, normal)\n  const localQuaternion = new THREE.Quaternion().setFromRotationMatrix(localBasis)\n  earthGroup.quaternion.copy(localQuaternion.invert())\n\n  camera.up.set(0, 0, 1)\n  camera.position.set(0, -0.82, RADIUS + 0.38)\n  camera.lookAt(0, 1.45, RADIUS + 0.10)\n  return true\n}"""
+          )
+
+          replace_once(
+          """  camera.position.z = THREE.MathUtils.clamp(5.05 + distance * 1.05, 5.25, 7.4)\n  followAircraft = false""",
+          """  restoreMapCameraPose(THREE.MathUtils.clamp(5.05 + distance * 1.05, 5.25, 7.4))\n  followAircraft = false"""
+          )
+
+          replace_once(
+          """  const setZoom = value => {\n    if (camera) camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)\n    markInteraction()\n  }""",
+          """  const setZoom = value => {\n    if (globeCameraMode !== 'ahead') restoreMapCameraPose(value)\n    markInteraction()\n  }"""
+          )
+
+          replace_once(
+          """    if (Math.abs(dx) + Math.abs(dy) > 1) {\n      followAircraft = false\n      globeCameraMode = 'free'\n      markInteraction()\n    }""",
+          """    if (Math.abs(dx) + Math.abs(dy) > 1) {\n      const leavingAhead = globeCameraMode === 'ahead'\n      followAircraft = false\n      globeCameraMode = 'free'\n      if (leavingAhead) restoreMapCameraPose()\n      markInteraction()\n    }"""
+          )
+
+          replace_once(
+          """  centerCoordinate(aircraftState.lat, aircraftState.lon)\n  if (camera && camera.position.z > 4.2) camera.position.z = 4.0\n  markInteraction()""",
+          """  centerCoordinate(aircraftState.lat, aircraftState.lon)\n  restoreMapCameraPose(mapCameraZ > 4.2 ? 4.0 : mapCameraZ)\n  markInteraction()"""
+          )
+
+          replace_once(
+          """export const setFollowAircraft = value => {\n  followAircraft = Boolean(value)\n  globeCameraMode = followAircraft ? 'follow' : 'free'\n  if (followAircraft && aircraftState) centerCoordinate(aircraftState.lat, aircraftState.lon)\n  markInteraction()\n  return followAircraft\n}""",
+          """export const setFollowAircraft = value => {\n  followAircraft = Boolean(value)\n  globeCameraMode = followAircraft ? 'follow' : 'free'\n  restoreMapCameraPose()\n  if (followAircraft && aircraftState) centerCoordinate(aircraftState.lat, aircraftState.lon)\n  markInteraction()\n  return followAircraft\n}"""
+          )
+
+          replace_once(
+          """  globeCameraMode = requested\n  followAircraft = requested === 'follow'\n  if (requested === 'follow') centerCoordinate(aircraftState.lat, aircraftState.lon)\n  if (requested === 'ahead') {\n    orientAhead()\n    if (camera && camera.position.z > 3.8) camera.position.z = 3.55\n  }""",
+          """  globeCameraMode = requested\n  followAircraft = requested === 'follow'\n  if (requested !== 'ahead') restoreMapCameraPose()\n  if (requested === 'follow') centerCoordinate(aircraftState.lat, aircraftState.lon)\n  if (requested === 'ahead') orientAhead()"""
+          )
+
+          replace_once(
+          """  followAircraft = false\n  globeCameraMode = 'free'\n}""",
+          """  followAircraft = false\n  globeCameraMode = 'free'\n  mapCameraZ = DEFAULT_CAMERA_Z\n}"""
+          )
+
+          path.write_text(text)
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/utils/globeUtils.js
+          git diff --cached --check
+          git commit -m "Fix Ahead view camera direction"
+          git push origin HEAD:main
