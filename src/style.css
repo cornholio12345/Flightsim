@@ -84,7 +84,24 @@ button:disabled {
   display: none !important;
 }
 
-/* Ahead reserves the lower centre for the aircraft and the route in front of it. */
+/* Ahead is a forward view. Only the very tip of the aircraft nose is visible
+   at the lower screen edge; the full 3D aircraft sprite is hidden in JS. */
+.globe-panel.ahead-mode-active::after {
+  content: '';
+  position: absolute;
+  z-index: 32;
+  left: 50%;
+  bottom: -15px;
+  width: 18px;
+  height: 30px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  clip-path: polygon(50% 0%, 69% 50%, 76% 100%, 24% 100%, 31% 50%);
+  background: linear-gradient(to bottom, #ffd54a 0 12%, #f7fbfd 13% 100%);
+  filter: drop-shadow(0 -1px 1px rgba(5, 24, 34, .9)) drop-shadow(0 0 4px rgba(117, 239, 185, .34));
+}
+
+/* Keep telemetry away from the forward sight line. */
 .globe-panel.ahead-mode-active .hud {
   left: auto !important;
   right: 10px !important;
