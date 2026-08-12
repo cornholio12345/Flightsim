@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import populatedPlaces from './src/data/populatedPlaces.generated.js'
+import airportIndex from './src/data/airports.generated.js'
 
 const offlineCityData = () => ({
   name: 'flightsim-offline-city-data',
@@ -26,10 +27,6 @@ const offlineCityData = () => ({
     if (!transformed.includes(oldCityBlock)) throw new Error('Could not locate city label zoom block in globeUtils.js')
     transformed = transformed.replace(oldCityBlock, newCityBlock)
 
-    // Billboard sprites always face the camera and were scaled from their individual
-    // camera distance. That makes map text appear to hover and slide across the globe.
-    // Turn labels into tangent planes fixed to the Earth and only use one global zoom
-    // scale. City texture x=42 is kept exactly on the real city coordinate.
     const oldAddMapLabel = `const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
   const material = new THREE.SpriteMaterial({ map: buildMapLabelTexture(text, kind), transparent: true, depthTest: true, depthWrite: false })
   const sprite = new THREE.Sprite(material)
@@ -148,8 +145,6 @@ const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
     if (!transformed.includes(oldCityLightRadius)) throw new Error('Could not locate city light radius in globeUtils.js')
     transformed = transformed.replace(oldCityLightRadius, newCityLightRadius)
 
-    // Ahead mode is a fixed chase view: the aircraft nose is the visual focus,
-    // the Earth is only mildly tilted beneath it, and dragging cannot break the view.
     const oldAhead = `const orientAhead = () => {
   if (!earthGroup || !aircraftState) return false
   const normal = latLonVector(aircraftState.lat, aircraftState.lon, 1).normalize()
@@ -179,7 +174,6 @@ const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
   if (forward.lengthSq() < 1e-8) return false
   const right = forward.clone().cross(normal).normalize()
 
-  // Keep the aircraft almost centered, with only a modest oblique view of the Earth.
   const targetNormal = new THREE.Vector3(0, -0.14, 1).normalize()
   const targetForward = new THREE.Vector3(0, 1, 0).addScaledVector(targetNormal, -targetNormal.y).normalize()
   const targetRight = targetForward.clone().cross(targetNormal).normalize()
@@ -191,7 +185,6 @@ const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
   earthGroup.quaternion.copy(targetQuaternion.multiply(localQuaternion.invert()))
 
   if (camera) {
-    // Center the tip of the sprite rather than its geometric center.
     const aircraftWorld = latLonVector(aircraftState.lat, aircraftState.lon, ROUTE_RADIUS)
     earthGroup.localToWorld(aircraftWorld)
     const noseFocus = aircraftWorld.clone().addScaledVector(targetForward, 0.028)
@@ -271,8 +264,29 @@ const addMapLabel = ({ text, lat, lon, kind, maxCameraZ, width, height }) => {
   }
 })
 
+const offlineAirportData = () => ({
+  name: 'flightsim-offline-airport-data',
+  enforce: 'pre',
+  transform(code, id) {
+    const normalizedId = id.replace(/\\/g, '/')
+    if (!normalizedId.endsWith('/src/services/flightAPI.js')) return null
+
+    const airportBase = `const AIRPORT_DATA_BASE = 'https://airport-data.com/api/ap_info.json'`
+    const injectedBase = `${airportBase}\nconst LOCAL_IATA_ICAO = new Map(${JSON.stringify(airportIndex)})`
+    if (!code.includes(airportBase)) throw new Error('Could not locate airport lookup constants')
+    let transformed = code.replace(airportBase, injectedBase)
+
+    const oldIataStart = `  if (/^[A-Z]{3}$/.test(query)) {\n    try {`
+    const newIataStart = `  if (/^[A-Z]{3}$/.test(query)) {\n    const localIcao = LOCAL_IATA_ICAO.get(query)\n    if (localIcao) return { icao: localIcao, iata: query, name: query }\n\n    try {`
+    if (!transformed.includes(oldIataStart)) throw new Error('Could not locate IATA airport resolver')
+    transformed = transformed.replace(oldIataStart, newIataStart)
+
+    return { code: transformed, map: null }
+  }
+})
+
 export default defineConfig({
-  plugins: [offlineCityData(), vue()],
+  plugins: [offlineCityData(), offlineAirportData(), vue()],
   server: {
     port: 3000,
     open: true
