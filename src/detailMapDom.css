@@ -2,9 +2,13 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: #07121a;
+  background: #314b43;
   user-select: none;
   -webkit-user-select: none;
+}
+
+.detail-map-canvas.dom-detail-map.night-map {
+  background: #07121a;
 }
 
 .dom-map-tiles,
@@ -18,7 +22,7 @@
 .dom-map-tiles {
   z-index: 1;
   overflow: hidden;
-  background: #07121a;
+  background: inherit;
 }
 
 .dom-map-tile {
@@ -148,6 +152,33 @@
   pointer-events: none;
 }
 
+.detail-map-tools {
+  position: absolute;
+  z-index: 36;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 5px;
+}
+
+.detail-map-tool {
+  min-height: 29px;
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 999px;
+  color: #a9bdc6;
+  background: rgba(4, 16, 23, .86);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, .24);
+  backdrop-filter: blur(9px);
+  font: 800 9px/1 system-ui, sans-serif;
+}
+
+.detail-map-tool.active {
+  color: #8ce5bd;
+  border-color: rgba(103, 217, 169, .34);
+  background: rgba(35, 116, 88, .72);
+}
+
 .detail-offline-card {
   position: absolute;
   z-index: 30;
@@ -182,7 +213,6 @@
 }
 
 .detail-offline-meta,
-.detail-offline-hint,
 .detail-offline-progress-label {
   color: #91a8b3;
   font-size: 9px;
@@ -221,10 +251,6 @@
   transition: width 120ms linear;
 }
 
-.detail-offline-hint {
-  margin-top: 7px;
-}
-
 .detail-offline-actions {
   display: flex;
   gap: 6px;
@@ -258,6 +284,17 @@
 }
 
 @media (max-width: 520px) {
+  .detail-map-tools {
+    top: 10px;
+    right: 9px;
+  }
+
+  .detail-map-tool {
+    min-height: 27px;
+    padding: 5px 8px;
+    font-size: 8px;
+  }
+
   .detail-offline-card {
     left: 9px;
     bottom: 9px;
@@ -266,7 +303,6 @@
   }
 
   .detail-offline-meta,
-  .detail-offline-hint,
   .detail-offline-progress-label {
     font-size: 8px;
   }

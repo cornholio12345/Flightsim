@@ -3,17 +3,33 @@ import Pbf from 'pbf'
 
 const TILE_SIZE = 256
 
-const palette = {
-  land: '#314b43',
-  ocean: '#0a2d43',
-  water: '#0d3850',
-  boundary: 'rgba(226, 235, 231, .46)',
-  roadMajor: '#b7baa5',
-  roadPrimary: '#9fae9e',
-  roadMinor: '#71877f',
-  rail: '#7f8e91',
-  label: '#edf4f1',
-  labelHalo: 'rgba(4, 14, 20, .94)'
+const palettes = {
+  day: {
+    land: '#566f62',
+    ocean: '#17475e',
+    water: '#20556c',
+    boundary: 'rgba(231, 239, 235, .52)',
+    roadMajor: '#d0cdb6',
+    roadPrimary: '#b4c0ae',
+    roadMinor: '#879b91',
+    rail: '#8d999d',
+    label: '#f2f6f4',
+    labelHalo: 'rgba(13, 27, 31, .92)',
+    waterLabel: 'rgba(171, 216, 233, .92)'
+  },
+  night: {
+    land: '#172923',
+    ocean: '#061a27',
+    water: '#092432',
+    boundary: 'rgba(177, 199, 193, .34)',
+    roadMajor: '#758179',
+    roadPrimary: '#596b63',
+    roadMinor: '#3e5049',
+    rail: '#506069',
+    label: '#dce7e3',
+    labelHalo: 'rgba(2, 8, 12, .97)',
+    waterLabel: 'rgba(107, 157, 181, .86)'
+  }
 }
 
 const traceGeometry = (ctx, geometry, extent, close = false) => {
@@ -43,14 +59,14 @@ const paintPolygonLayer = (tile, name, ctx, fillStyle) => {
   ctx.restore()
 }
 
-const streetStyle = kind => {
+const streetStyle = (kind, palette) => {
   if (['motorway', 'trunk'].includes(kind)) return { color: palette.roadMajor, width: 2.0 }
   if (['primary', 'secondary'].includes(kind)) return { color: palette.roadPrimary, width: 1.25 }
   if (['rail', 'narrow_gauge', 'light_rail'].includes(kind)) return { color: palette.rail, width: 0.8, dash: [3, 3] }
   return { color: palette.roadMinor, width: 0.65 }
 }
 
-const paintStreets = (tile, ctx, zoom) => {
+const paintStreets = (tile, ctx, zoom, palette) => {
   const layer = tile.layers?.streets
   if (!layer) return
   for (let index = 0; index < layer.length; index += 1) {
@@ -59,7 +75,7 @@ const paintStreets = (tile, ctx, zoom) => {
     const kind = String(feature.properties?.kind || '')
     if (zoom < 7 && !['motorway', 'trunk'].includes(kind)) continue
     if (zoom < 9 && !['motorway', 'trunk', 'primary', 'rail'].includes(kind)) continue
-    const style = streetStyle(kind)
+    const style = streetStyle(kind, palette)
     ctx.save()
     ctx.strokeStyle = style.color
     ctx.lineWidth = style.width
@@ -74,7 +90,7 @@ const paintStreets = (tile, ctx, zoom) => {
   }
 }
 
-const paintBoundaries = (tile, ctx) => {
+const paintBoundaries = (tile, ctx, palette) => {
   const layer = tile.layers?.boundaries
   if (!layer) return
   for (let index = 0; index < layer.length; index += 1) {
@@ -104,7 +120,7 @@ const shouldDrawPlace = (properties, zoom) => {
   return population >= 20_000 || ['city', 'town'].includes(kind)
 }
 
-const paintPlaceLabels = (tile, ctx, zoom) => {
+const paintPlaceLabels = (tile, ctx, zoom, palette) => {
   const layer = tile.layers?.place_labels
   if (!layer) return
   let drawn = 0
@@ -138,7 +154,7 @@ const paintPlaceLabels = (tile, ctx, zoom) => {
   }
 }
 
-const paintWaterLabels = (tile, ctx, zoom) => {
+const paintWaterLabels = (tile, ctx, zoom, palette) => {
   if (zoom < 6) return
   const layer = tile.layers?.water_polygons_labels
   if (!layer) return
@@ -158,20 +174,21 @@ const paintWaterLabels = (tile, ctx, zoom) => {
     ctx.strokeStyle = palette.labelHalo
     ctx.lineWidth = 2.5
     ctx.strokeText(name, point.x * scale, point.y * scale)
-    ctx.fillStyle = 'rgba(145, 196, 219, .88)'
+    ctx.fillStyle = palette.waterLabel
     ctx.fillText(name, point.x * scale, point.y * scale)
     ctx.restore()
     drawn += 1
   }
 }
 
-export const renderVersaTile = (canvas, buffer, { zoom = 6 } = {}) => {
+export const renderVersaTile = (canvas, buffer, { zoom = 6, theme = 'night' } = {}) => {
   if (!canvas || !buffer) return false
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
   if (!bytes.byteLength) return false
   const tile = new VectorTile(new Pbf(bytes))
   const ctx = canvas.getContext('2d', { alpha: false })
   if (!ctx) return false
+  const palette = palettes[theme] || palettes.night
 
   canvas.width = TILE_SIZE
   canvas.height = TILE_SIZE
@@ -180,9 +197,9 @@ export const renderVersaTile = (canvas, buffer, { zoom = 6 } = {}) => {
 
   paintPolygonLayer(tile, 'ocean', ctx, palette.ocean)
   paintPolygonLayer(tile, 'water_polygons', ctx, palette.water)
-  paintBoundaries(tile, ctx)
-  paintStreets(tile, ctx, zoom)
-  paintWaterLabels(tile, ctx, zoom)
-  paintPlaceLabels(tile, ctx, zoom)
+  paintBoundaries(tile, ctx, palette)
+  paintStreets(tile, ctx, zoom, palette)
+  paintWaterLabels(tile, ctx, zoom, palette)
+  paintPlaceLabels(tile, ctx, zoom, palette)
   return true
 }

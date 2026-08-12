@@ -80,6 +80,10 @@ button:disabled {
   z-index: 45;
 }
 
+.globe-panel.ahead-mode-active .follow-btn {
+  display: none !important;
+}
+
 .map-mode-switch {
   position: absolute;
   z-index: 50;

@@ -74,6 +74,7 @@ let animationFrame
 let resizeObserver
 let interactionCleanup
 let followAircraft = false
+let globeCameraMode = 'free'
 let lastInteractionAt = Date.now()
 let lastRenderAt = 0
 let lastSunUpdateAt = 0
@@ -671,6 +672,27 @@ const centerCoordinate = (lat, lon) => {
   earthGroup.rotation.set(THREE.MathUtils.degToRad(Number(lat)), THREE.MathUtils.degToRad(-(Number(lon) + 90)), 0)
 }
 
+const orientAhead = () => {
+  if (!earthGroup || !aircraftState) return false
+  const normal = latLonVector(aircraftState.lat, aircraftState.lon, 1).normalize()
+  const aheadCoord = destinationPoint(aircraftState.lat, aircraftState.lon, aircraftState.bearing, 0.05)
+  const aheadNormal = latLonVector(aheadCoord.lat, aheadCoord.lon, 1).normalize()
+  const forward = aheadNormal.clone().addScaledVector(normal, -aheadNormal.dot(normal)).normalize()
+  if (forward.lengthSq() < 1e-8) return false
+  const right = forward.clone().cross(normal).normalize()
+
+  const targetNormal = new THREE.Vector3(0, -0.34, 1).normalize()
+  const targetForward = new THREE.Vector3(0, 1, 0).addScaledVector(targetNormal, -targetNormal.y).normalize()
+  const targetRight = targetForward.clone().cross(targetNormal).normalize()
+
+  const localBasis = new THREE.Matrix4().makeBasis(right, forward, normal)
+  const targetBasis = new THREE.Matrix4().makeBasis(targetRight, targetForward, targetNormal)
+  const localQuaternion = new THREE.Quaternion().setFromRotationMatrix(localBasis)
+  const targetQuaternion = new THREE.Quaternion().setFromRotationMatrix(targetBasis)
+  earthGroup.quaternion.copy(targetQuaternion.multiply(localQuaternion.invert()))
+  return true
+}
+
 const focusRoute = nodes => {
   if (!earthGroup || !camera || !nodes?.length) return
   const start = nodes[0]
@@ -684,6 +706,7 @@ const focusRoute = nodes => {
   centerCoordinate(midLat, midLon)
   camera.position.z = THREE.MathUtils.clamp(5.05 + distance * 1.05, 5.25, 7.4)
   followAircraft = false
+  globeCameraMode = 'free'
 }
 
 const enableInteractions = canvas => {
@@ -730,6 +753,7 @@ const enableInteractions = canvas => {
     previousY = event.clientY
     if (Math.abs(dx) + Math.abs(dy) > 1) {
       followAircraft = false
+      globeCameraMode = 'free'
       markInteraction()
     }
     earthGroup.rotation.y += dx * 0.006
@@ -959,11 +983,13 @@ export const updateAircraftPosition = (lat, lon, altitudeFt = 0, bearing = 0) =>
   aircraft.position.copy(latLonVector(lat, lon, ROUTE_RADIUS))
   aircraftState = { lat: Number(lat), lon: Number(lon), bearing: Number(bearing || 0), visualAltitude, altitudeFt: Number(altitudeFt || 0) }
   aircraft.visible = true
-  if (followAircraft) centerCoordinate(lat, lon)
+  if (globeCameraMode === 'ahead') orientAhead()
+  else if (followAircraft) centerCoordinate(lat, lon)
 }
 
 export const recenterOnAircraft = () => {
   if (!aircraftState) return false
+  globeCameraMode = 'follow'
   followAircraft = true
   centerCoordinate(aircraftState.lat, aircraftState.lon)
   if (camera && camera.position.z > 4.2) camera.position.z = 4.0
@@ -973,9 +999,28 @@ export const recenterOnAircraft = () => {
 
 export const setFollowAircraft = value => {
   followAircraft = Boolean(value)
+  globeCameraMode = followAircraft ? 'follow' : 'free'
   if (followAircraft && aircraftState) centerCoordinate(aircraftState.lat, aircraftState.lon)
   markInteraction()
   return followAircraft
+}
+
+export const setGlobeCameraMode = mode => {
+  const requested = ['free', 'follow', 'ahead'].includes(mode) ? mode : 'free'
+  if ((requested === 'follow' || requested === 'ahead') && !aircraftState) {
+    globeCameraMode = 'free'
+    followAircraft = false
+    return globeCameraMode
+  }
+  globeCameraMode = requested
+  followAircraft = requested === 'follow'
+  if (requested === 'follow') centerCoordinate(aircraftState.lat, aircraftState.lon)
+  if (requested === 'ahead') {
+    orientAhead()
+    if (camera && camera.position.z > 3.8) camera.position.z = 3.55
+  }
+  markInteraction()
+  return globeCameraMode
 }
 
 export const destroyGlobe = () => {
@@ -1007,4 +1052,5 @@ export const destroyGlobe = () => {
   earthTexture = null
   interactionCleanup = null
   followAircraft = false
+  globeCameraMode = 'free'
 }

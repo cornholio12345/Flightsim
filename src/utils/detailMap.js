@@ -34,10 +34,13 @@ let aircraftState = null
 let alternativeRoutes = []
 let selectedAlternativeId = null
 let activeTripId = null
+let mapTheme = 'night'
+let forceOffline = false
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const toRad = value => Number(value) * Math.PI / 180
 const toDeg = value => Number(value) * 180 / Math.PI
+const networkAllowed = () => !forceOffline && navigator.onLine
 
 const greatCircle = (a, b, t) => {
   const lat1 = toRad(a[1])
@@ -152,6 +155,22 @@ const notifyTerminalError = message => {
   onErrorCallback?.(new Error(message))
 }
 
+const startTileWatchdog = () => {
+  clearTimeout(tileWatchdog)
+  tileWatchdog = window.setTimeout(() => {
+    if (!anyTileLoaded) notifyTerminalError(networkAllowed()
+      ? 'VersaTiles did not return a map tile within 8 seconds'
+      : 'No downloaded offline map is available for this view')
+  }, 8000)
+}
+
+const resetTileHealth = () => {
+  anyTileLoaded = false
+  terminalTileError = false
+  tileErrors = 0
+  startTileWatchdog()
+}
+
 const rememberTile = (key, data) => {
   memoryTileData.set(key, data)
   if (memoryTileData.size <= MEMORY_TILE_LIMIT) return
@@ -165,9 +184,11 @@ const loadTileData = async (z, x, y) => {
     const stored = await getOfflineMapTile(activeTripId, z, x, y)
     if (stored) return { data: stored, offline: true }
   }
-  const remembered = memoryTileData.get(sourceKey)
-  if (remembered) return { data: remembered, offline: false }
-  if (!navigator.onLine) {
+  if (!forceOffline) {
+    const remembered = memoryTileData.get(sourceKey)
+    if (remembered) return { data: remembered, offline: false }
+  }
+  if (!networkAllowed()) {
     const error = new Error('This area or zoom level is not in the downloaded offline map.')
     error.code = 'OFFLINE_TILE_MISS'
     throw error
@@ -186,10 +207,11 @@ const paintTile = async (canvas, z, x, y, generation, key) => {
   try {
     const result = await loadTileData(z, x, y)
     if (generation !== tileGeneration || !canvas.isConnected || canvas.dataset.tileKey !== key) return
-    renderVersaTile(canvas, result.data, { zoom: z })
+    renderVersaTile(canvas, result.data, { zoom: z, theme: mapTheme })
     canvas.classList.add('loaded')
     canvas.classList.toggle('offline', result.offline)
     anyTileLoaded = true
+    clearTimeout(tileWatchdog)
     notifyReady()
   } catch (error) {
     if (generation !== tileGeneration || !canvas.isConnected || canvas.dataset.tileKey !== key) return
@@ -235,7 +257,7 @@ const renderTiles = () => {
         canvas.dataset.tileKey = key
         const placeholder = canvas.getContext('2d')
         if (placeholder) {
-          placeholder.fillStyle = '#203a36'
+          placeholder.fillStyle = mapTheme === 'night' ? '#10211d' : '#456054'
           placeholder.fillRect(0, 0, TILE_SIZE, TILE_SIZE)
         }
         tilePane.appendChild(canvas)
@@ -391,7 +413,7 @@ const fitRoute = samples => {
   render()
 }
 
-const currentMaxZoom = () => navigator.onLine ? MAX_ZOOM : OFFLINE_MAX_ZOOM
+const currentMaxZoom = () => networkAllowed() ? MAX_ZOOM : OFFLINE_MAX_ZOOM
 
 const changeZoom = delta => {
   const next = clamp(zoom + delta, MIN_ZOOM, currentMaxZoom())
@@ -512,6 +534,7 @@ export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
   terminalTileError = false
   tileErrors = 0
   container.classList.add('dom-detail-map')
+  container.classList.toggle('night-map', mapTheme === 'night')
   container.innerHTML = ''
 
   tilePane = document.createElement('div')
@@ -531,11 +554,7 @@ export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
 
   resizeObserver = new ResizeObserver(() => render())
   resizeObserver.observe(container)
-  tileWatchdog = window.setTimeout(() => {
-    if (!anyTileLoaded) notifyTerminalError(navigator.onLine
-      ? 'VersaTiles did not return a map tile within 8 seconds'
-      : 'No downloaded offline map is available for this view')
-  }, 8000)
+  startTileWatchdog()
 
   render()
   return { container }
@@ -549,11 +568,35 @@ export const setDetailMapTrip = tripId => {
   if (container) render()
 }
 
-export const refreshDetailMapTiles = () => {
+export const refreshDetailMapTiles = ({ resetHealth = false } = {}) => {
   clearVisibleTiles()
-  tileErrors = 0
-  terminalTileError = false
+  if (resetHealth) resetTileHealth()
+  else {
+    tileErrors = 0
+    terminalTileError = false
+  }
   if (container) render()
+}
+
+export const setDetailMapTheme = theme => {
+  const next = theme === 'day' ? 'day' : 'night'
+  if (next === mapTheme) return mapTheme
+  mapTheme = next
+  container?.classList?.toggle('night-map', mapTheme === 'night')
+  clearVisibleTiles()
+  if (container) render()
+  return mapTheme
+}
+
+export const setDetailMapOfflineMode = value => {
+  const next = Boolean(value)
+  if (next === forceOffline) return forceOffline
+  forceOffline = next
+  if (zoom > currentMaxZoom()) zoom = currentMaxZoom()
+  clearVisibleTiles()
+  resetTileHealth()
+  if (container) render()
+  return forceOffline
 }
 
 export const setDetailRoute = (nodes, labels = {}) => {
@@ -633,4 +676,5 @@ export const destroyDetailMap = () => {
   tileErrors = 0
   center = { lat: 50.11, lon: 8.68 }
   zoom = 3
+  forceOffline = false
 }

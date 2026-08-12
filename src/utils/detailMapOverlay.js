@@ -5,17 +5,20 @@ import {
   recenterDetailAircraft,
   refreshDetailMapTiles,
   resizeDetailMap,
+  setDetailMapOfflineMode,
+  setDetailMapTheme,
   setDetailMapTrip,
   setDetailRoute,
   updateDetailAircraft,
   updateDetailProgress
 } from './detailMap'
+import { setGlobeCameraMode } from './globeUtils'
 import {
   deleteOfflineMapPack,
   downloadOfflineMapPack,
   estimateOfflineMapPack,
   formatOfflineBytes,
-  getOfflineMapPack
+  getOfflineMapPackStatus
 } from './offlineMapStore'
 
 const labelsForTrip = trip => ({
@@ -55,6 +58,14 @@ export const mountDetailMapOverlay = store => {
   detailStatus.style.display = 'none'
   detailContainer.appendChild(detailStatus)
 
+  const detailTools = element('div', 'detail-map-tools')
+  const nightButton = element('button', 'detail-map-tool', 'Night')
+  nightButton.type = 'button'
+  const offlineTestButton = element('button', 'detail-map-tool', 'Offline test')
+  offlineTestButton.type = 'button'
+  detailTools.append(nightButton, offlineTestButton)
+  detailContainer.appendChild(detailTools)
+
   const offlineCard = element('div', 'detail-offline-card')
   const offlineTop = element('div', 'detail-offline-top')
   const offlineText = element('div', 'detail-offline-text')
@@ -72,7 +83,6 @@ export const mountDetailMapOverlay = store => {
   progressWrap.append(progressTrack, progressLabel)
   progressWrap.style.display = 'none'
 
-  const offlineHint = element('div', 'detail-offline-hint', 'Starts only when you tap. May use mobile data.')
   const offlineActions = element('div', 'detail-offline-actions')
   const downloadButton = element('button', 'detail-offline-download', 'Download offline map')
   downloadButton.type = 'button'
@@ -80,33 +90,50 @@ export const mountDetailMapOverlay = store => {
   secondaryButton.type = 'button'
   secondaryButton.style.display = 'none'
   offlineActions.append(downloadButton, secondaryButton)
-  offlineCard.append(offlineTop, progressWrap, offlineHint, offlineActions)
+  offlineCard.append(offlineTop, progressWrap, offlineActions)
   offlineCard.style.display = 'none'
   detailContainer.appendChild(offlineCard)
 
   panel.insertBefore(detailContainer, panel.firstChild)
 
   const switcher = element('div', 'map-mode-switch')
-  const offlineButton = buildButton('Offline globe', true)
+  const globeButton = buildButton('Globe', true)
+  const aheadButton = buildButton('Ahead')
   const detailButton = buildButton('Detail map')
-  switcher.append(offlineButton, detailButton)
+  switcher.append(globeButton, aheadButton, detailButton)
   panel.appendChild(switcher)
 
-  let mode = 'offline'
+  let mode = 'globe'
   let detailInitialized = false
   let detailReady = false
   let currentTripId = null
   let currentState = null
   let syncTimer = null
-  let offlinePack = null
+  let offlineState = null
   let offlineEstimate = null
-  let offlineMessage = ''
   let downloadController = null
   let downloadProgress = null
+  let downloadError = ''
+  let nightMode = true
+  let offlineTest = false
+  try { nightMode = localStorage.getItem('flightsim-detail-night') !== '0' } catch (_) { /* default night */ }
+  setDetailMapTheme(nightMode ? 'night' : 'day')
 
   const setStatus = (text = '') => {
     detailStatus.textContent = text
     detailStatus.style.display = text ? 'block' : 'none'
+  }
+
+  const renderModeUi = () => {
+    const hasActiveFlight = Boolean(store.activeTrip?.route?.nodes?.length)
+    globeButton.classList.toggle('active', mode === 'globe')
+    aheadButton.classList.toggle('active', mode === 'ahead')
+    detailButton.classList.toggle('active', mode === 'detail')
+    aheadButton.disabled = !hasActiveFlight
+    panel.classList.toggle('detail-map-active', mode === 'detail')
+    panel.classList.toggle('ahead-mode-active', mode === 'ahead')
+    nightButton.classList.toggle('active', nightMode)
+    offlineTestButton.classList.toggle('active', offlineTest)
   }
 
   const renderOfflineUi = () => {
@@ -117,20 +144,22 @@ export const mountDetailMapOverlay = store => {
 
     offlineEstimate = offlineEstimate || estimateOfflineMapPack(trip.route.nodes)
     const downloading = Boolean(downloadController)
-    downloadButton.disabled = downloading || !navigator.onLine
+    const completed = Number(offlineState?.completed || 0)
+    const total = Math.max(1, Number(offlineState?.tileCount || offlineEstimate.tileCount || 1))
+    const partialPercent = Math.round((completed / total) * 100)
+    downloadButton.disabled = downloading || !navigator.onLine || offlineTest
     secondaryButton.disabled = false
 
     if (downloading && downloadProgress) {
-      const completed = Number(downloadProgress.completed || 0)
-      const total = Math.max(1, Number(downloadProgress.total || 1))
-      const percent = Math.round((completed / total) * 100)
+      const done = Number(downloadProgress.completed || 0)
+      const progressTotal = Math.max(1, Number(downloadProgress.total || 1))
+      const percent = Math.round((done / progressTotal) * 100)
       offlineTitle.textContent = `Downloading offline map · ${percent}%`
       offlineMeta.textContent = `Zoom ${downloadProgress.minZoom}–${downloadProgress.maxZoom} · route ±${downloadProgress.corridorKm} km`
       offlineBadge.textContent = 'DOWNLOADING'
       progressWrap.style.display = 'grid'
       progressBar.style.width = `${percent}%`
-      progressLabel.textContent = `${completed} / ${total} tiles · ${formatOfflineBytes(downloadProgress.byteCount)}`
-      offlineHint.textContent = 'Download runs only because you started it here.'
+      progressLabel.textContent = `${done} / ${progressTotal} tiles · ${formatOfflineBytes(downloadProgress.byteCount)}`
       downloadButton.style.display = 'inline-flex'
       downloadButton.textContent = 'Downloading…'
       secondaryButton.style.display = 'inline-flex'
@@ -138,43 +167,54 @@ export const mountDetailMapOverlay = store => {
       return
     }
 
-    progressWrap.style.display = 'none'
-    progressBar.style.width = '0%'
+    progressWrap.style.display = completed > 0 && !offlineState?.complete ? 'grid' : 'none'
+    progressBar.style.width = `${partialPercent}%`
+    progressLabel.textContent = completed > 0 ? `${completed} / ${total} tiles · ${formatOfflineBytes(offlineState?.byteCount)}` : ''
 
-    if (offlinePack) {
+    if (offlineState?.complete) {
       offlineTitle.textContent = 'Offline map ready'
-      offlineMeta.textContent = `${offlinePack.tileCount} tiles · ${formatOfflineBytes(offlinePack.byteCount)} · zoom ${offlinePack.minZoom}–${offlinePack.maxZoom} · ±${offlinePack.corridorKm} km`
-      offlineBadge.textContent = 'OFFLINE READY'
-      offlineHint.textContent = offlineMessage || 'Stored on this device until you delete the map or Android clears app storage.'
+      offlineMeta.textContent = `${offlineState.tileCount} tiles · ${formatOfflineBytes(offlineState.byteCount)} · zoom ${offlineState.minZoom}–${offlineState.maxZoom} · ±${offlineState.corridorKm} km`
+      offlineBadge.textContent = offlineTest ? 'TEST OFFLINE' : 'OFFLINE READY'
       downloadButton.style.display = 'none'
       secondaryButton.style.display = 'inline-flex'
       secondaryButton.textContent = 'Delete offline map'
       return
     }
 
+    if (completed > 0) {
+      offlineTitle.textContent = `Offline map · ${partialPercent}% saved`
+      offlineMeta.textContent = downloadError || `Zoom ${offlineState.minZoom}–${offlineState.maxZoom} · route ±${offlineState.corridorKm} km`
+      offlineBadge.textContent = offlineTest ? 'TEST OFFLINE' : 'PARTIAL'
+      downloadButton.style.display = 'inline-flex'
+      downloadButton.textContent = 'Resume download'
+      secondaryButton.style.display = 'inline-flex'
+      secondaryButton.textContent = 'Delete'
+      return
+    }
+
+    progressWrap.style.display = 'none'
     downloadButton.style.display = 'inline-flex'
     secondaryButton.style.display = 'none'
     offlineTitle.textContent = 'Offline detail map'
-    offlineMeta.textContent = `${offlineEstimate.tileCount} tiles · zoom ${offlineEstimate.minZoom}–${offlineEstimate.maxZoom} · route ±${offlineEstimate.corridorKm} km`
-    offlineBadge.textContent = navigator.onLine ? 'ON DEMAND' : 'OFFLINE'
-    offlineHint.textContent = offlineMessage || (navigator.onLine
-      ? 'Starts only when you tap. May use mobile data.'
-      : 'Connect to the internet, then tap Download offline map.')
+    offlineMeta.textContent = downloadError || `${offlineEstimate.tileCount} tiles · zoom ${offlineEstimate.minZoom}–${offlineEstimate.maxZoom} · route ±${offlineEstimate.corridorKm} km`
+    offlineBadge.textContent = offlineTest ? 'TEST OFFLINE' : (navigator.onLine ? 'ON DEMAND' : 'OFFLINE')
     downloadButton.textContent = 'Download offline map'
   }
 
   const refreshOfflineState = async tripId => {
     if (!tripId) {
-      offlinePack = null
+      offlineState = null
       offlineEstimate = null
       renderOfflineUi()
       return
     }
     const requestedId = String(tripId)
-    const pack = await getOfflineMapPack(requestedId)
+    const trip = store.activeTrip
+    if (!trip?.route?.nodes?.length) return
+    const state = await getOfflineMapPackStatus(requestedId, trip.route.nodes)
     if (String(store.activeTrip?.id || '') !== requestedId) return
-    offlinePack = pack || null
-    offlineEstimate = store.activeTrip?.route?.nodes?.length ? estimateOfflineMapPack(store.activeTrip.route.nodes) : null
+    offlineState = state
+    offlineEstimate = estimateOfflineMapPack(trip.route.nodes)
     renderOfflineUi()
   }
 
@@ -185,18 +225,20 @@ export const mountDetailMapOverlay = store => {
         if (downloadController) downloadController.abort()
         currentTripId = null
         setDetailMapTrip(null)
-        offlinePack = null
+        offlineState = null
         offlineEstimate = null
         renderOfflineUi()
       }
+      if (mode === 'ahead') setMode('globe')
+      renderModeUi()
       return
     }
     if (trip.id !== currentTripId) {
       if (downloadController) downloadController.abort()
       currentTripId = trip.id
       currentState = null
-      offlineMessage = ''
-      offlinePack = null
+      downloadError = ''
+      offlineState = null
       offlineEstimate = estimateOfflineMapPack(trip.route.nodes)
       setDetailMapTrip(trip.id)
       setDetailRoute(trip.route.nodes, labelsForTrip(trip))
@@ -204,7 +246,10 @@ export const mountDetailMapOverlay = store => {
     }
     const startedAt = Number(trip.startedAt || 0)
     const blockMinutes = Number(trip.blockMinutes || 0)
-    if (!startedAt || !blockMinutes) return
+    if (!startedAt || !blockMinutes) {
+      renderModeUi()
+      return
+    }
     const elapsedMinutes = Math.max(0, (Date.now() - startedAt) / 60_000)
     const timeProgress = Math.min(1, Math.max(0, elapsedMinutes / blockMinutes))
     const progress = Math.min(1, Math.max(0, timeProgress + Number(trip.progressOffset || 0)))
@@ -219,6 +264,7 @@ export const mountDetailMapOverlay = store => {
     currentState = state
     updateDetailAircraft(state.lat, state.lon, state.bearing, false)
     updateDetailProgress(progress, { lat: state.lat, lon: state.lon })
+    renderModeUi()
   }
 
   const startDetailMap = () => {
@@ -234,8 +280,7 @@ export const mountDetailMapOverlay = store => {
         },
         onError: error => {
           console.warn('Detail map error', error)
-          const reason = error?.message || (navigator.onLine ? 'Map tile request failed' : 'No offline map available')
-          setStatus(reason)
+          setStatus(error?.message || (navigator.onLine ? 'Map tile request failed' : 'No offline map available'))
         }
       })
       detailInitialized = Boolean(detailMap)
@@ -252,42 +297,45 @@ export const mountDetailMapOverlay = store => {
     })
   }
 
-  const setMode = nextMode => {
-    mode = nextMode
+  function setMode(nextMode) {
+    let next = nextMode
+    if (next === 'ahead' && !store.activeTrip?.route?.nodes?.length) next = 'globe'
+    mode = next
     const detail = mode === 'detail'
-    offlineButton.classList.toggle('active', !detail)
-    detailButton.classList.toggle('active', detail)
-    panel.classList.toggle('detail-map-active', detail)
     canvas.style.display = detail ? 'none' : 'block'
     detailContainer.style.display = detail ? 'block' : 'none'
+    if (mode === 'ahead') setGlobeCameraMode('ahead')
+    else if (mode === 'globe') setGlobeCameraMode('free')
+    renderModeUi()
     renderOfflineUi()
     if (detail) ensureDetail()
   }
 
   const startOfflineDownload = async () => {
     const trip = store.activeTrip
-    if (!trip?.id || !trip?.route?.nodes?.length || downloadController) return
+    if (!trip?.id || !trip?.route?.nodes?.length || downloadController || offlineTest) return
     if (!navigator.onLine) {
-      offlineMessage = 'Connect to the internet before downloading.'
+      downloadError = 'Connect to the internet to continue.'
       renderOfflineUi()
       return
     }
 
     const downloadTripId = String(trip.id)
-    offlineMessage = ''
+    downloadError = ''
+    offlineState = await getOfflineMapPackStatus(trip.id, trip.route.nodes)
     downloadProgress = {
-      completed: 0,
-      total: offlineEstimate?.tileCount || 1,
-      byteCount: 0,
-      minZoom: offlineEstimate?.minZoom,
-      maxZoom: offlineEstimate?.maxZoom,
-      corridorKm: offlineEstimate?.corridorKm
+      completed: offlineState?.completed || 0,
+      total: offlineState?.tileCount || offlineEstimate?.tileCount || 1,
+      byteCount: offlineState?.byteCount || 0,
+      minZoom: offlineState?.minZoom || offlineEstimate?.minZoom,
+      maxZoom: offlineState?.maxZoom || offlineEstimate?.maxZoom,
+      corridorKm: offlineState?.corridorKm || offlineEstimate?.corridorKm
     }
     downloadController = new AbortController()
     renderOfflineUi()
 
     try {
-      const pack = await downloadOfflineMapPack({
+      await downloadOfflineMapPack({
         tripId: trip.id,
         nodes: trip.route.nodes,
         signal: downloadController.signal,
@@ -298,17 +346,15 @@ export const mountDetailMapOverlay = store => {
         }
       })
       if (String(store.activeTrip?.id || '') === downloadTripId) {
-        offlinePack = pack
-        offlineMessage = 'Download complete. Detail map can now use this corridor without internet.'
+        offlineState = await getOfflineMapPackStatus(trip.id, trip.route.nodes)
         setDetailMapTrip(trip.id)
         refreshDetailMapTiles()
         setStatus('')
       }
     } catch (error) {
       if (String(store.activeTrip?.id || '') === downloadTripId) {
-        if (error?.name === 'AbortError') offlineMessage = 'Download cancelled. Partial map data was removed.'
-        else offlineMessage = error?.message || 'Offline map download failed.'
-        offlinePack = await getOfflineMapPack(trip.id)
+        offlineState = await getOfflineMapPackStatus(trip.id, trip.route.nodes)
+        if (error?.name !== 'AbortError') downloadError = error?.message || 'Download paused.'
       }
     } finally {
       downloadController = null
@@ -323,23 +369,42 @@ export const mountDetailMapOverlay = store => {
       downloadController.abort()
       return
     }
-    if (!trip?.id || !offlinePack) return
+    if (!trip?.id || !offlineState?.completed) return
     secondaryButton.disabled = true
     try {
       await deleteOfflineMapPack(trip.id)
-      offlinePack = null
-      offlineMessage = 'Offline map deleted.'
-      refreshDetailMapTiles()
+      offlineState = null
+      downloadError = ''
+      refreshDetailMapTiles({ resetHealth: offlineTest })
     } finally {
       secondaryButton.disabled = false
       renderOfflineUi()
     }
   }
 
-  const onOfflineMode = () => setMode('offline')
+  const toggleNight = () => {
+    nightMode = !nightMode
+    try { localStorage.setItem('flightsim-detail-night', nightMode ? '1' : '0') } catch (_) { /* no-op */ }
+    setDetailMapTheme(nightMode ? 'night' : 'day')
+    renderModeUi()
+  }
+
+  const toggleOfflineTest = () => {
+    offlineTest = !offlineTest
+    setStatus('')
+    setDetailMapOfflineMode(offlineTest)
+    renderModeUi()
+    renderOfflineUi()
+  }
+
+  const onGlobeMode = () => setMode('globe')
+  const onAheadMode = () => setMode('ahead')
   const onDetailMode = () => setMode('detail')
-  offlineButton.addEventListener('click', onOfflineMode)
+  globeButton.addEventListener('click', onGlobeMode)
+  aheadButton.addEventListener('click', onAheadMode)
   detailButton.addEventListener('click', onDetailMode)
+  nightButton.addEventListener('click', toggleNight)
+  offlineTestButton.addEventListener('click', toggleOfflineTest)
   downloadButton.addEventListener('click', startOfflineDownload)
   secondaryButton.addEventListener('click', secondaryAction)
 
@@ -355,16 +420,20 @@ export const mountDetailMapOverlay = store => {
 
   const handleResize = () => { if (mode === 'detail') resizeDetailMap() }
   const handleConnectivity = () => {
+    renderModeUi()
     renderOfflineUi()
-    if (mode === 'detail') refreshDetailMapTiles()
+    if (mode === 'detail') refreshDetailMapTiles({ resetHealth: true })
   }
   window.addEventListener('resize', handleResize)
   window.addEventListener('online', handleConnectivity)
   window.addEventListener('offline', handleConnectivity)
 
   syncTimer = window.setInterval(() => {
-    if (mode === 'detail') syncTrip()
+    syncTrip()
   }, 1000)
+
+  renderModeUi()
+  syncTrip()
 
   return () => {
     clearInterval(syncTimer)
@@ -373,11 +442,16 @@ export const mountDetailMapOverlay = store => {
     window.removeEventListener('resize', handleResize)
     window.removeEventListener('online', handleConnectivity)
     window.removeEventListener('offline', handleConnectivity)
-    offlineButton.removeEventListener('click', onOfflineMode)
+    globeButton.removeEventListener('click', onGlobeMode)
+    aheadButton.removeEventListener('click', onAheadMode)
     detailButton.removeEventListener('click', onDetailMode)
+    nightButton.removeEventListener('click', toggleNight)
+    offlineTestButton.removeEventListener('click', toggleOfflineTest)
     downloadButton.removeEventListener('click', startOfflineDownload)
     secondaryButton.removeEventListener('click', secondaryAction)
-    panel.classList.remove('detail-map-active')
+    panel.classList.remove('detail-map-active', 'ahead-mode-active')
+    setGlobeCameraMode('free')
+    setDetailMapOfflineMode(false)
     try { switcher.remove() } catch (_) { /* no-op */ }
     try { detailContainer.remove() } catch (_) { /* no-op */ }
     if (detailInitialized || detailReady) destroyDetailMap()

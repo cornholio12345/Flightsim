@@ -9,6 +9,8 @@ export const VERSATILES_TILE_URL = (z, x, y) => `https://tiles.versatiles.org/ti
 const MAX_PACK_TILES = 1800
 const DOWNLOAD_CONCURRENCY = 3
 const SAMPLE_SPACING_KM = 65
+const MAX_TILE_ATTEMPTS = 4
+const RETRY_BASE_MS = 450
 
 const db = new Dexie('FlightSimOfflineMaps')
 db.version(1).stores({
@@ -133,6 +135,36 @@ export const getOfflineMapTile = async (tripId, z, x, y) => {
   return row?.data || null
 }
 
+export const getOfflineMapPackStatus = async (tripId, nodes) => {
+  const id = String(tripId || '')
+  if (!id) return null
+  const plan = estimateOfflineMapPack(nodes)
+  if (!plan.tileCount) return null
+  const wanted = new Set(plan.tiles.map(tile => tileDbKey(id, tile.z, tile.x, tile.y)))
+  const rows = await db.tiles.where('tripId').equals(id).toArray()
+  let completed = 0
+  let byteCount = 0
+  rows.forEach(row => {
+    if (!wanted.has(row.key)) return
+    completed += 1
+    byteCount += Number(row.byteCount || row.data?.byteLength || 0)
+  })
+  const saved = await db.packs.get(id)
+  const complete = completed >= plan.tileCount && Boolean(saved?.complete)
+  return {
+    tripId: id,
+    savedAt: saved?.savedAt || null,
+    complete,
+    completed,
+    tileCount: plan.tileCount,
+    byteCount,
+    minZoom: plan.minZoom,
+    maxZoom: plan.maxZoom,
+    corridorKm: plan.corridorKm,
+    source: saved?.source || 'VersaTiles / OpenStreetMap'
+  }
+}
+
 export const deleteOfflineMapPack = async tripId => {
   if (!tripId) return
   const id = String(tripId)
@@ -150,6 +182,41 @@ const abortError = () => {
   }
 }
 
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) return reject(abortError())
+  const timer = setTimeout(() => {
+    signal?.removeEventListener?.('abort', onAbort)
+    resolve()
+  }, ms)
+  const onAbort = () => {
+    clearTimeout(timer)
+    reject(abortError())
+  }
+  signal?.addEventListener?.('abort', onAbort, { once: true })
+})
+
+const fetchTileWithRetry = async (tile, signal) => {
+  let lastError = null
+  for (let attempt = 1; attempt <= MAX_TILE_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) throw abortError()
+    try {
+      const response = await fetch(VERSATILES_TILE_URL(tile.z, tile.x, tile.y), {
+        signal,
+        cache: 'default',
+        headers: { Accept: 'application/vnd.mapbox-vector-tile, application/x-protobuf, */*' }
+      })
+      if (!response.ok) throw new Error(`VersaTiles returned HTTP ${response.status} for z${tile.z}/${tile.x}/${tile.y}.`)
+      return await response.arrayBuffer()
+    } catch (error) {
+      if (error?.name === 'AbortError' || signal?.aborted) throw abortError()
+      lastError = error
+      if (attempt >= MAX_TILE_ATTEMPTS) break
+      await sleep(RETRY_BASE_MS * (2 ** (attempt - 1)), signal)
+    }
+  }
+  throw lastError || new Error(`Could not download map tile z${tile.z}/${tile.x}/${tile.y}.`)
+}
+
 export const downloadOfflineMapPack = async ({ tripId, nodes, signal, onProgress } = {}) => {
   const id = String(tripId || '')
   if (!id) throw new Error('No flight selected for offline map download.')
@@ -158,11 +225,34 @@ export const downloadOfflineMapPack = async ({ tripId, nodes, signal, onProgress
   const plan = estimateOfflineMapPack(nodes)
   if (!plan.tileCount) throw new Error('This flight does not contain a usable route for an offline map.')
 
-  await deleteOfflineMapPack(id)
-  let completed = 0
-  let byteCount = 0
+  const wantedKeys = new Set(plan.tiles.map(tile => tileDbKey(id, tile.z, tile.x, tile.y)))
+  const existingRows = await db.tiles.where('tripId').equals(id).toArray()
+  const staleKeys = existingRows.filter(row => !wantedKeys.has(row.key)).map(row => row.key)
+  if (staleKeys.length) await db.tiles.bulkDelete(staleKeys)
+
+  const retainedRows = existingRows.filter(row => wantedKeys.has(row.key))
+  const retainedKeys = new Set(retainedRows.map(row => row.key))
+  let completed = retainedRows.length
+  let byteCount = retainedRows.reduce((sum, row) => sum + Number(row.byteCount || row.data?.byteLength || 0), 0)
+  const pending = plan.tiles.filter(tile => !retainedKeys.has(tileDbKey(id, tile.z, tile.x, tile.y)))
   let cursor = 0
   let failed = null
+
+  const packState = complete => ({
+    tripId: id,
+    savedAt: Date.now(),
+    complete,
+    completed,
+    tileCount: plan.tileCount,
+    byteCount,
+    minZoom: plan.minZoom,
+    maxZoom: plan.maxZoom,
+    corridorKm: plan.corridorKm,
+    source: 'VersaTiles / OpenStreetMap'
+  })
+
+  const saveState = complete => db.packs.put(packState(complete))
+  await saveState(completed >= plan.tileCount)
 
   const report = current => onProgress?.({
     completed,
@@ -176,21 +266,22 @@ export const downloadOfflineMapPack = async ({ tripId, nodes, signal, onProgress
 
   report(null)
 
+  if (!pending.length) {
+    const pack = packState(true)
+    await db.packs.put(pack)
+    try { await navigator.storage?.persist?.() } catch (_) { /* best effort only */ }
+    return pack
+  }
+
   const worker = async () => {
     while (!failed) {
       if (signal?.aborted) throw abortError()
       const index = cursor
       cursor += 1
-      if (index >= plan.tiles.length) return
-      const tile = plan.tiles[index]
+      if (index >= pending.length) return
+      const tile = pending[index]
       try {
-        const response = await fetch(VERSATILES_TILE_URL(tile.z, tile.x, tile.y), {
-          signal,
-          cache: 'default',
-          headers: { Accept: 'application/vnd.mapbox-vector-tile, application/x-protobuf, */*' }
-        })
-        if (!response.ok) throw new Error(`VersaTiles returned HTTP ${response.status} for z${tile.z}/${tile.x}/${tile.y}.`)
-        const data = await response.arrayBuffer()
+        const data = await fetchTileWithRetry(tile, signal)
         if (signal?.aborted) throw abortError()
         await db.tiles.put({
           key: tileDbKey(id, tile.z, tile.x, tile.y),
@@ -204,6 +295,7 @@ export const downloadOfflineMapPack = async ({ tripId, nodes, signal, onProgress
         })
         completed += 1
         byteCount += data.byteLength
+        if (completed % 12 === 0 || completed >= plan.tileCount) await saveState(false)
         report(tile)
       } catch (error) {
         failed = error
@@ -213,23 +305,14 @@ export const downloadOfflineMapPack = async ({ tripId, nodes, signal, onProgress
   }
 
   try {
-    const workers = Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, plan.tileCount) }, () => worker())
+    const workers = Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, pending.length) }, () => worker())
     await Promise.all(workers)
-    const pack = {
-      tripId: id,
-      savedAt: Date.now(),
-      tileCount: plan.tileCount,
-      byteCount,
-      minZoom: plan.minZoom,
-      maxZoom: plan.maxZoom,
-      corridorKm: plan.corridorKm,
-      source: 'VersaTiles / OpenStreetMap'
-    }
+    const pack = packState(true)
     await db.packs.put(pack)
     try { await navigator.storage?.persist?.() } catch (_) { /* best effort only */ }
     return pack
   } catch (error) {
-    await deleteOfflineMapPack(id)
+    await saveState(false)
     throw error
   }
 }
