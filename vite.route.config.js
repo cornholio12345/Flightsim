@@ -156,6 +156,24 @@ const correctAheadView = () => ({
     if (!transformed.includes(oldNormal)) throw new Error('Could not locate transformed Ahead horizon block')
     transformed = transformed.replace(oldNormal, newNormal)
 
+    const oldFocus = `    const noseFocus = aircraftWorld.clone().addScaledVector(targetForward, 0.028)
+    camera.position.x = 0
+    camera.position.y = 0.08
+    camera.up.set(0, 1, 0)
+    camera.lookAt(noseFocus)`
+    const newFocus = `    // As the camera moves closer, shift the visual target farther along the route.
+    // This keeps the aircraft low in frame and preserves useful map detail in front of the nose.
+    const zoomIn = THREE.MathUtils.clamp((3.9 - camera.position.z) / (3.9 - MIN_CAMERA_Z), 0, 1)
+    const easedZoomIn = zoomIn * zoomIn * (3 - 2 * zoomIn)
+    const focusAhead = THREE.MathUtils.lerp(0.028, 0.24, easedZoomIn)
+    const noseFocus = aircraftWorld.clone().addScaledVector(targetForward, focusAhead)
+    camera.position.x = 0
+    camera.position.y = 0.08
+    camera.up.set(0, 1, 0)
+    camera.lookAt(noseFocus)`
+    if (!transformed.includes(oldFocus)) throw new Error('Could not locate Ahead camera focus block')
+    transformed = transformed.replace(oldFocus, newFocus)
+
     return { code: transformed, map: null }
   }
 })
