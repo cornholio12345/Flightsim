@@ -84,6 +84,26 @@ button:disabled {
   display: none !important;
 }
 
+/* Ahead reserves the lower centre for the aircraft and the route in front of it. */
+.globe-panel.ahead-mode-active .hud {
+  left: auto !important;
+  right: 10px !important;
+  top: 58px !important;
+  bottom: auto !important;
+  max-width: min(48%, 210px) !important;
+  padding: 8px 10px !important;
+  gap: 2px !important;
+  background: rgba(4, 12, 19, 0.70) !important;
+}
+
+.globe-panel.ahead-mode-active .hud strong {
+  font-size: 11px !important;
+}
+
+.globe-panel.ahead-mode-active .hud span {
+  font-size: 9px !important;
+}
+
 .map-mode-switch {
   position: absolute;
   z-index: 50;
