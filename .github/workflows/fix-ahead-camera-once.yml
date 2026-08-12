@@ -25,38 +25,43 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('vite.ahead.config.js')
           text = path.read_text()
 
-          def replace_once(old, new):
+          def modify_decl(name, replacements):
               global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'Expected exactly one match, got {count} for:\n{old[:220]}')
-              text = text.replace(old, new, 1)
+              pattern = re.compile(rf'^\s*const {re.escape(name)} = `.*`\s*$', re.MULTILINE)
+              matches = list(pattern.finditer(text))
+              if len(matches) != 1:
+                  raise SystemExit(f'Expected one declaration for {name}, got {len(matches)}')
+              match = matches[0]
+              line = match.group(0)
+              for old, new in replacements:
+                  count = line.count(old)
+                  if count != 1:
+                      raise SystemExit(f'Expected one {old!r} in {name}, got {count}')
+                  line = line.replace(old, new, 1)
+              text = text[:match.start()] + line + text[match.end():]
 
-          replace_once(
-              "const AHEAD_CAMERA_Z = 3.55\\nconst AHEAD_MIN_FOV = 6",
-              "const AHEAD_CAMERA_Z = RADIUS + 0.38\\nconst AHEAD_CAMERA_BACK = 0.82\\nconst AHEAD_LOOK_AHEAD = 1.45\\nconst AHEAD_LOOK_HEIGHT = RADIUS + 0.10\\nconst AHEAD_MIN_FOV = 6"
-          )
+          modify_decl('opticalState', [
+              (r'const AHEAD_CAMERA_Z = 3.55\nconst AHEAD_MIN_FOV = 6',
+               r'const AHEAD_CAMERA_Z = RADIUS + 0.38\nconst AHEAD_CAMERA_BACK = 0.82\nconst AHEAD_LOOK_AHEAD = 1.45\nconst AHEAD_LOOK_HEIGHT = RADIUS + 0.10\nconst AHEAD_MIN_FOV = 6')
+          ])
 
-          replace_once(
-              "const anchoredTargetNormal = `  const targetNormal = aheadTargetNormal()`",
-              "const anchoredTargetNormal = `  // Canonical chase frame: aircraft is on top of the globe and its\\n  // route tangent points away from the camera toward the horizon.\\n  const targetNormal = new THREE.Vector3(0, 0, 1)`"
-          )
+          modify_decl('anchoredTargetNormal', [
+              ('aheadTargetNormal()', 'new THREE.Vector3(0, 0, 1)')
+          ])
 
-          old_focus = """const opticalFocusBlock = `    // Keep the optical axis fixed. Earth orientation places the real aircraft\n    // just below the screen edge and the actual route tangent straight ahead.\n    // Zoom is handled exclusively through camera.fov.\n    camera.position.set(0, 0, AHEAD_CAMERA_Z)\n    camera.fov = aheadFov\n    camera.up.set(0, 1, 0)\n    camera.lookAt(0, 0, 0)\n    camera.updateProjectionMatrix()`"""
-          new_focus = """const opticalFocusBlock = `    // True Ahead / chase camera: sit behind and above the aircraft, with local\n    // surface-up as screen-up, and look along the route toward the horizon.\n    // Zoom remains optical and changes only camera.fov.\n    camera.position.set(0, -AHEAD_CAMERA_BACK, AHEAD_CAMERA_Z)\n    camera.fov = aheadFov\n    camera.up.set(0, 0, 1)\n    camera.lookAt(0, AHEAD_LOOK_AHEAD, AHEAD_LOOK_HEIGHT)\n    camera.updateProjectionMatrix()`"""
-          replace_once(old_focus, new_focus)
-
-          old_zoom_pose = """        camera.position.set(0, 0, AHEAD_CAMERA_Z)\n        camera.fov = aheadFov\n        camera.up.set(0, 1, 0)\n        camera.lookAt(0, 0, 0)"""
-          new_zoom_pose = """        camera.position.set(0, -AHEAD_CAMERA_BACK, AHEAD_CAMERA_Z)\n        camera.fov = aheadFov\n        camera.up.set(0, 0, 1)\n        camera.lookAt(0, AHEAD_LOOK_AHEAD, AHEAD_LOOK_HEIGHT)"""
-          replace_once(old_zoom_pose, new_zoom_pose)
-
-          old_entry_pose = """      camera.position.set(0, 0, AHEAD_CAMERA_Z)\n      camera.fov = aheadFov\n      camera.up.set(0, 1, 0)\n      camera.lookAt(0, 0, 0)"""
-          new_entry_pose = """      camera.position.set(0, -AHEAD_CAMERA_BACK, AHEAD_CAMERA_Z)\n      camera.fov = aheadFov\n      camera.up.set(0, 0, 1)\n      camera.lookAt(0, AHEAD_LOOK_AHEAD, AHEAD_LOOK_HEIGHT)"""
-          replace_once(old_entry_pose, new_entry_pose)
+          chase_pose = [
+              ('camera.position.set(0, 0, AHEAD_CAMERA_Z)', 'camera.position.set(0, -AHEAD_CAMERA_BACK, AHEAD_CAMERA_Z)'),
+              ('camera.up.set(0, 1, 0)', 'camera.up.set(0, 0, 1)'),
+              ('camera.lookAt(0, 0, 0)', 'camera.lookAt(0, AHEAD_LOOK_AHEAD, AHEAD_LOOK_HEIGHT)')
+          ]
+          modify_decl('opticalFocusBlock', chase_pose)
+          modify_decl('opticalSetZoom', chase_pose)
+          modify_decl('opticalAheadEntry', chase_pose)
 
           path.write_text(text)
           PY
