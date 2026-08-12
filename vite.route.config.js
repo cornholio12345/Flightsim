@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import baseConfig from './vite.config.js'
+import airportDetails from './src/data/airportDetails.generated.js'
 
 const routeAlignedAircraft = () => ({
   name: 'flightsim-route-aligned-aircraft',
@@ -178,7 +179,188 @@ const correctAheadView = () => ({
   }
 })
 
+const fpdServerFallback = () => ({
+  name: 'flightsim-fpd-server-fallback',
+  enforce: 'post',
+  transform(code, id) {
+    const normalizedId = id.replace(/\\/g, '/')
+
+    if (normalizedId.endsWith('/src/services/flightAPI.js')) {
+      let transformed = code
+      const weatherBase = `const WEATHER_BASE = 'https://api.open-meteo.com/v1/forecast'`
+      const detailRows = airportDetails.map(([iata, icao, lat, lon, name]) => [iata, { icao, lat, lon, name }])
+      const detailsInjection = `${weatherBase}\nconst LOCAL_AIRPORT_DETAILS = new Map(${JSON.stringify(detailRows)})\nconst LOCAL_AIRPORT_DETAILS_BY_ICAO = new Map([...LOCAL_AIRPORT_DETAILS.values()].map(airport => [airport.icao, airport]))`
+      if (!transformed.includes(weatherBase)) throw new Error('Could not locate weather constant for airport fallback data')
+      transformed = transformed.replace(weatherBase, detailsInjection)
+
+      const oldIcaoReturn = `  if (/^[A-Z0-9]{4}$/.test(query)) return { icao: query, iata: '', name: query }`
+      const newIcaoReturn = `  if (/^[A-Z0-9]{4}$/.test(query)) {
+    const localAirport = LOCAL_AIRPORT_DETAILS_BY_ICAO.get(query)
+    if (localAirport) return { icao: query, iata: '', name: localAirport.name || query, lat: Number(localAirport.lat), lon: Number(localAirport.lon) }
+    return { icao: query, iata: '', name: query }
+  }`
+      if (!transformed.includes(oldIcaoReturn)) throw new Error('Could not locate ICAO airport resolver')
+      transformed = transformed.replace(oldIcaoReturn, newIcaoReturn)
+
+      const oldLocalReturn = `    const localIcao = LOCAL_IATA_ICAO.get(query)
+    if (localIcao) return { icao: localIcao, iata: query, name: query }`
+      const newLocalReturn = `    const localIcao = LOCAL_IATA_ICAO.get(query)
+    const localAirport = LOCAL_AIRPORT_DETAILS.get(query)
+    if (localAirport) return {
+      icao: localAirport.icao || localIcao,
+      iata: query,
+      name: localAirport.name || query,
+      lat: Number(localAirport.lat),
+      lon: Number(localAirport.lon)
+    }
+    if (localIcao) return { icao: localIcao, iata: query, name: query }`
+      if (!transformed.includes(oldLocalReturn)) throw new Error('Could not locate local IATA airport resolver')
+      transformed = transformed.replace(oldLocalReturn, newLocalReturn)
+
+      const resolveStart = `const resolveAirport = async value => {`
+      const retryHelpers = `const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+const requestJsonWithRetry = async path => {
+  const delays = [0, 350, 900]
+  let lastError = null
+  for (const delay of delays) {
+    if (delay) await wait(delay)
+    try {
+      return await requestJson(path)
+    } catch (error) {
+      lastError = error
+      if (![502, 503, 504].includes(Number(error?.status))) throw error
+    }
+  }
+  throw lastError
+}
+
+${resolveStart}`
+      if (!transformed.includes(resolveStart)) throw new Error('Could not locate airport resolver for retry helper')
+      transformed = transformed.replace(resolveStart, retryHelpers)
+
+      transformed = transformed.replace(
+        `const byFlight = await requestJson(buildPlanSearchPath({ flightNumber: normalizedFlight }))`,
+        `const byFlight = await requestJsonWithRetry(buildPlanSearchPath({ flightNumber: normalizedFlight }))`
+      )
+      transformed = transformed.replace(
+        `const byRoute = await requestJson(buildPlanSearchPath(routeParams))`,
+        `const byRoute = await requestJsonWithRetry(buildPlanSearchPath(routeParams))`
+      )
+
+      const searchStart = `export const searchFlightPlans = async ({ flightNumber, from, to }) => {`
+      const fallbackHelpers = `const greatCircleFallbackNodes = (fromAirport, toAirport, steps = 40) => {
+  const lat1 = Number(fromAirport.lat) * Math.PI / 180
+  const lon1 = Number(fromAirport.lon) * Math.PI / 180
+  const lat2 = Number(toAirport.lat) * Math.PI / 180
+  const lon2 = Number(toAirport.lon) * Math.PI / 180
+  const dot = Math.max(-1, Math.min(1,
+    Math.sin(lat1) * Math.sin(lat2) + Math.cos(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1)
+  ))
+  const angle = Math.acos(dot)
+  const sinAngle = Math.sin(angle)
+  const nodes = []
+  for (let index = 0; index <= steps; index += 1) {
+    const fraction = index / steps
+    if (angle < 1e-8 || Math.abs(sinAngle) < 1e-8) {
+      nodes.push({ ident: index === 0 ? fromAirport.icao : index === steps ? toAirport.icao : '', lat: Number(fromAirport.lat) + (Number(toAirport.lat) - Number(fromAirport.lat)) * fraction, lon: Number(fromAirport.lon) + (Number(toAirport.lon) - Number(fromAirport.lon)) * fraction })
+      continue
+    }
+    const a = Math.sin((1 - fraction) * angle) / sinAngle
+    const b = Math.sin(fraction * angle) / sinAngle
+    const x = a * Math.cos(lat1) * Math.cos(lon1) + b * Math.cos(lat2) * Math.cos(lon2)
+    const y = a * Math.cos(lat1) * Math.sin(lon1) + b * Math.cos(lat2) * Math.sin(lon2)
+    const z = a * Math.sin(lat1) + b * Math.sin(lat2)
+    nodes.push({
+      ident: index === 0 ? fromAirport.icao : index === steps ? toAirport.icao : '',
+      lat: Math.atan2(z, Math.hypot(x, y)) * 180 / Math.PI,
+      lon: Math.atan2(y, x) * 180 / Math.PI
+    })
+  }
+  return nodes
+}
+
+const buildServerFallbackPlan = ({ resolvedFrom, resolvedTo, normalizedFlight }) => {
+  const nodes = greatCircleFallbackNodes(resolvedFrom, resolvedTo)
+  const distanceNm = Math.round(distanceNmBetween(resolvedFrom, resolvedTo))
+  return {
+    id: \`fallback:\${resolvedFrom.icao}:\${resolvedTo.icao}\`,
+    source: 'local-fallback',
+    flightNumber: normalizedFlight || '',
+    fromICAO: resolvedFrom.icao,
+    toICAO: resolvedTo.icao,
+    fromIATA: resolvedFrom.iata || '',
+    toIATA: resolvedTo.iata || '',
+    fromName: resolvedFrom.name || resolvedFrom.icao,
+    toName: resolvedTo.name || resolvedTo.icao,
+    fromRegionName: '',
+    toRegionName: '',
+    fromTimeZone: '',
+    toTimeZone: '',
+    distanceNm,
+    maxAltitudeFt: 36000,
+    waypoints: nodes.length,
+    tags: ['server fallback'],
+    popularity: 0,
+    updatedAt: null,
+    baseScore: 0,
+    recommendationScore: 0,
+    recommendationRank: 1,
+    weatherLabel: 'Direct fallback · Flight Plan Database unavailable',
+    differenceLabel: 'Server fallback · direct great-circle route',
+    viaSummary: 'Direct',
+    previewNodes: nodes,
+    nodes
+  }
+}
+
+${searchStart}`
+      if (!transformed.includes(searchStart)) throw new Error('Could not locate flight-plan search for fallback helper')
+      transformed = transformed.replace(searchStart, fallbackHelpers)
+
+      const oldErrorExit = `  if (!searches.length && errors.length) throw errors[0]`
+      const newErrorExit = `  if (!searches.length && errors.length) {
+    const serverError = errors.find(error => [502, 503, 504].includes(Number(error?.status)))
+    const canFallback = serverError && hasRoutePair && resolvedFrom?.icao && resolvedTo?.icao && Number.isFinite(Number(resolvedFrom?.lat)) && Number.isFinite(Number(resolvedFrom?.lon)) && Number.isFinite(Number(resolvedTo?.lat)) && Number.isFinite(Number(resolvedTo?.lon))
+    if (canFallback) return [buildServerFallbackPlan({ resolvedFrom, resolvedTo, normalizedFlight })]
+    throw errors[0]
+  }`
+      if (!transformed.includes(oldErrorExit)) throw new Error('Could not locate flight-plan server error exit')
+      transformed = transformed.replace(oldErrorExit, newErrorExit)
+
+      return { code: transformed, map: null }
+    }
+
+    if (normalizedId.endsWith('/src/App.vue')) {
+      let transformed = code
+      const oldFetch = `    const fetched = await fetchFlightPlan(selectedPlan.value.id)`
+      const newFetch = `    const fetched = selectedPlan.value.source === 'local-fallback'
+      ? { ...selectedPlan.value, nodes: selectedPlan.value.nodes || selectedPlan.value.previewNodes }
+      : await fetchFlightPlan(selectedPlan.value.id)`
+      if (!transformed.includes(oldFetch)) throw new Error('Could not locate selected plan fetch')
+      transformed = transformed.replace(oldFetch, newFetch)
+
+      const oldResultBlock = `    if (results.value.length) {
+      selectedPlan.value = results.value[0]
+      blockMinutes.value = estimateBlockMinutes(results.value[0].distanceNm)
+      if (!activeTrip.value) setRouteAlternatives(results.value, results.value[0].id)
+    } else setMessage('No matching plans found. Try adding departure and destination.', true)`
+      const newResultBlock = `    if (results.value.length) {
+      selectedPlan.value = results.value[0]
+      blockMinutes.value = estimateBlockMinutes(results.value[0].distanceNm)
+      if (!activeTrip.value) setRouteAlternatives(results.value, results.value[0].id)
+      if (results.value[0]?.source === 'local-fallback') setMessage('Flight Plan Database is temporarily unavailable. Using a direct fallback route.')
+    } else setMessage('No matching plans found. Try adding departure and destination.', true)`
+      if (!transformed.includes(oldResultBlock)) throw new Error('Could not locate route search result block')
+      transformed = transformed.replace(oldResultBlock, newResultBlock)
+      return { code: transformed, map: null }
+    }
+
+    return null
+  }
+})
+
 export default defineConfig({
   ...baseConfig,
-  plugins: [routeAlignedAircraft(), ...(baseConfig.plugins || []), correctAheadView()]
+  plugins: [routeAlignedAircraft(), ...(baseConfig.plugins || []), correctAheadView(), fpdServerFallback()]
 })
