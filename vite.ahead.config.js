@@ -39,24 +39,24 @@ const opticalAheadView = () => ({
     if (!transformed.includes(oldScaleBlock)) throw new Error('Could not locate aircraft scale block')
     transformed = transformed.replace(oldScaleBlock, opticalScaleBlock)
 
-    const oldSetZoom = `  const setZoom = value => {\n    if (camera) camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)\n    markInteraction()\n  }`
+    // vite.config.js has already added orientAhead() to this handler.
+    const oldSetZoom = `  const setZoom = value => {\n    if (camera) camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)\n    if (globeCameraMode === 'ahead') orientAhead()\n    markInteraction()\n  }`
     const opticalSetZoom = `  const setZoom = value => {\n    if (camera) {\n      if (globeCameraMode === 'ahead') {\n        // Existing pinch/wheel callers express zoom as a requested camera-Z.\n        // Convert that relative change into FOV instead, leaving camera-Z fixed.\n        const ratio = THREE.MathUtils.clamp(Number(value) / AHEAD_CAMERA_Z, 0.62, 1.62)\n        aheadFov = THREE.MathUtils.clamp(aheadFov * ratio, AHEAD_MIN_FOV, AHEAD_MAX_FOV)\n        camera.position.set(0, 0, AHEAD_CAMERA_Z)\n        camera.fov = aheadFov\n        camera.up.set(0, 1, 0)\n        camera.lookAt(0, 0, 0)\n        camera.updateProjectionMatrix()\n        orientAhead()\n      } else {\n        camera.fov = 48\n        camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)\n        camera.updateProjectionMatrix()\n      }\n    }\n    markInteraction()\n  }`
-    if (!transformed.includes(oldSetZoom)) throw new Error('Could not locate globe zoom handler')
+    if (!transformed.includes(oldSetZoom)) throw new Error('Could not locate transformed globe zoom handler')
     transformed = transformed.replace(oldSetZoom, opticalSetZoom)
 
-    const dragGuard = `    if (!dragging || !earthGroup) return`
-    const aheadDragGuard = `    if (!dragging || !earthGroup) return\n    // Ahead is a sight line, not a free globe. One-finger drag must not break\n    // the aircraft anchor; pinch remains available above for optical zoom.\n    if (globeCameraMode === 'ahead') return`
-    if (!transformed.includes(dragGuard)) throw new Error('Could not locate globe drag guard')
-    transformed = transformed.replace(dragGuard, aheadDragGuard)
+    // One-finger dragging in Ahead is already blocked by vite.config.js. Pinch
+    // still reaches setZoom above and therefore changes only FOV.
 
     const cameraModeState = `  globeCameraMode = requested\n  followAircraft = requested === 'follow'`
     const cameraModeStateWithFov = `  globeCameraMode = requested\n  followAircraft = requested === 'follow'\n  if (camera && requested !== 'ahead' && camera.fov !== 48) {\n    camera.fov = 48\n    camera.updateProjectionMatrix()\n  }`
     if (!transformed.includes(cameraModeState)) throw new Error('Could not locate globe camera mode assignment')
     transformed = transformed.replace(cameraModeState, cameraModeStateWithFov)
 
-    const oldAheadEntry = `  if (requested === 'ahead') {\n    orientAhead()\n    if (camera && camera.position.z > 3.8) camera.position.z = 3.55\n  }`
+    // vite.config.js has already changed the Ahead entry threshold to 4.2/3.9.
+    const oldAheadEntry = `  if (requested === 'ahead') {\n    if (camera && camera.position.z > 4.2) camera.position.z = 3.9\n    orientAhead()\n  }`
     const opticalAheadEntry = `  if (requested === 'ahead') {\n    if (camera) {\n      camera.position.set(0, 0, AHEAD_CAMERA_Z)\n      camera.fov = aheadFov\n      camera.up.set(0, 1, 0)\n      camera.lookAt(0, 0, 0)\n      camera.updateProjectionMatrix()\n    }\n    orientAhead()\n  }`
-    if (!transformed.includes(oldAheadEntry)) throw new Error('Could not locate Ahead mode entry block')
+    if (!transformed.includes(oldAheadEntry)) throw new Error('Could not locate transformed Ahead mode entry block')
     transformed = transformed.replace(oldAheadEntry, opticalAheadEntry)
 
     return { code: transformed, map: null }
