@@ -7,6 +7,8 @@ const AHEAD_BASE_FOV = 30
 const AHEAD_MIN_FOV = 6
 const AHEAD_MAX_FOV = 30
 const AHEAD_WIDE_AIRCRAFT_NDC_Y = -1.02
+const AHEAD_PAN_LIMIT_NDC = 0.72
+const GLOBE_GESTURE_PITCH_LIMIT = 1.15
 const AHEAD_TARGET_NORMAL = new THREE.Vector3(0, 0.19218855364791623, 1).normalize()
 const TEST_WIDTH = 1080
 const TEST_HEIGHT = 1920
@@ -68,7 +70,7 @@ const makeCamera = fov => {
   return camera
 }
 
-const applyAheadProjection = (camera, aircraftWorld, focusWorld, fov) => {
+const applyAheadProjection = (camera, aircraftWorld, focusWorld, fov, panNdc = 0) => {
   camera.clearViewOffset()
   camera.fov = fov
   camera.updateProjectionMatrix()
@@ -85,15 +87,34 @@ const applyAheadProjection = (camera, aircraftWorld, focusWorld, fov) => {
     1
   )
   const focusBlend = zoomProgress * zoomProgress * (3 - 2 * zoomProgress)
+  const clampedPan = THREE.MathUtils.clamp(panNdc, -AHEAD_PAN_LIMIT_NDC, AHEAD_PAN_LIMIT_NDC)
   camera.setViewOffset(
     TEST_WIDTH,
     TEST_HEIGHT,
     THREE.MathUtils.lerp(wideOffsetX, focusOffsetX, focusBlend),
-    THREE.MathUtils.lerp(wideOffsetY, focusOffsetY, focusBlend),
+    THREE.MathUtils.lerp(wideOffsetY, focusOffsetY, focusBlend) + clampedPan * TEST_HEIGHT / 2,
     TEST_WIDTH,
     TEST_HEIGHT
   )
   camera.updateProjectionMatrix()
+}
+
+const applyGlobeGesture = (quaternion, gesturePitch, dx, dy) => {
+  const yawDelta = Number(dx || 0) * 0.006
+  const requestedPitch = THREE.MathUtils.clamp(
+    gesturePitch + Number(dy || 0) * 0.004,
+    -GLOBE_GESTURE_PITCH_LIMIT,
+    GLOBE_GESTURE_PITCH_LIMIT
+  )
+  const pitchDelta = requestedPitch - gesturePitch
+
+  if (Math.abs(yawDelta) > 1e-8) {
+    quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawDelta))
+  }
+  if (Math.abs(pitchDelta) > 1e-8) {
+    quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitchDelta))
+  }
+  return requestedPitch
 }
 
 const assert = (condition, message) => {
@@ -144,6 +165,24 @@ assert(Math.abs(zoomFocus.x) < EPSILON && Math.abs(zoomFocus.y) < EPSILON, 'Full
 assert(zoomAircraft.y < -1, 'Aircraft origin should be allowed to leave below frame while zooming')
 assert(zoomHorizon.y > 1, 'Horizon should be allowed to leave above frame while zooming')
 
+// Ahead pan must reframe vertically without changing heading/depth geometry.
+const panCamera = makeCamera(AHEAD_BASE_FOV)
+applyAheadProjection(panCamera, aircraftWorld, focusWorld, AHEAD_BASE_FOV, 0.30)
+const pannedHorizon = horizonWorld.clone().project(panCamera)
+assert(Math.abs((pannedHorizon.y - wideHorizon.y) - 0.30) < 0.002, 'Ahead vertical pan does not behave as a pure framing shift')
+assert(panCamera.position.distanceTo(farWorld) > panCamera.position.distanceTo(nearWorld), 'Ahead pan changed forward depth ordering')
+
+// Regression for the first-touch North Pole jump: start from the exact Ahead
+// quaternion, reset gesture-relative pitch to zero, then apply a tiny Free-mode
+// drag. Incremental quaternions must only move by the tiny requested angle.
+const beforeFirstTouch = earthQuaternion.clone()
+const afterFirstTouch = earthQuaternion.clone()
+let gesturePitch = 0
+gesturePitch = applyGlobeGesture(afterFirstTouch, gesturePitch, 1, 1)
+const firstTouchAngle = beforeFirstTouch.angleTo(afterFirstTouch)
+assert(firstTouchAngle > 0 && firstTouchAngle < 0.012, `First Globe touch jumped by ${THREE.MathUtils.radToDeg(firstTouchAngle).toFixed(2)}°`)
+assert(Math.abs(gesturePitch - 0.004) < EPSILON, 'Globe gesture pitch did not initialize incrementally')
+
 console.table([
   {
     view: 'wide',
@@ -158,6 +197,12 @@ console.table([
     aircraftY: zoomAircraft.y.toFixed(4),
     horizonY: zoomHorizon.y.toFixed(4),
     focusY: zoomFocus.y.toFixed(4)
+  },
+  {
+    view: 'pan + first touch',
+    panNdc: '0.30',
+    horizonShift: (pannedHorizon.y - wideHorizon.y).toFixed(4),
+    firstTouchDeg: THREE.MathUtils.radToDeg(firstTouchAngle).toFixed(3)
   }
 ])
-console.log('Ahead nose-camera geometry checks passed.')
+console.log('Ahead nose-camera, pan and Globe gesture continuity checks passed.')
