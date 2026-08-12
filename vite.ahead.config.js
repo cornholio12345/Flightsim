@@ -15,7 +15,7 @@ const opticalAheadView = () => ({
     // the bottom of the viewport after every zoom, so the map always starts at
     // the current position and expands forward along the route.
     const modeState = `let globeCameraMode = 'free'`
-    const opticalState = `let globeCameraMode = 'free'\nlet aheadFov = 40\nconst AHEAD_CAMERA_Z = 3.55\nconst AHEAD_MIN_FOV = 6\nconst AHEAD_MAX_FOV = 46\nconst AHEAD_AIRCRAFT_NDC_Y = -1.075\nconst AHEAD_AIRCRAFT_SCREEN_HEIGHT = 0.20`
+    const opticalState = `let globeCameraMode = 'free'\nlet aheadFov = 40\nconst AHEAD_CAMERA_Z = RADIUS + 0.38\nconst AHEAD_CAMERA_BACK = 0.82\nconst AHEAD_LOOK_AHEAD = 1.45\nconst AHEAD_LOOK_HEIGHT = RADIUS + 0.10\nconst AHEAD_MIN_FOV = 6\nconst AHEAD_MAX_FOV = 46\nconst AHEAD_AIRCRAFT_NDC_Y = -1.075\nconst AHEAD_AIRCRAFT_SCREEN_HEIGHT = 0.20`
     if (!transformed.includes(modeState)) throw new Error('Could not locate globe camera state')
     transformed = transformed.replace(modeState, opticalState)
 
@@ -25,12 +25,12 @@ const opticalAheadView = () => ({
     transformed = transformed.replace(orientStart, anchorHelper)
 
     const staticTargetNormal = `  const targetNormal = new THREE.Vector3(0, 0.24, 1).normalize()`
-    const anchoredTargetNormal = `  const targetNormal = aheadTargetNormal()`
+    const anchoredTargetNormal = `  const targetNormal = new THREE.Vector3(0, 0, 1)`
     if (!transformed.includes(staticTargetNormal)) throw new Error('Could not locate transformed Ahead target normal')
     transformed = transformed.replace(staticTargetNormal, anchoredTargetNormal)
 
     const oldFocusBlock = `    const focusAhead = THREE.MathUtils.lerp(0.028, 0.24, easedZoomIn)\n    const noseFocus = aircraftWorld.clone().addScaledVector(targetForward, focusAhead)\n    camera.position.x = 0\n    camera.position.y = 0.08\n    camera.up.set(0, 1, 0)\n    camera.lookAt(noseFocus)`
-    const opticalFocusBlock = `    // Keep the optical axis fixed. Earth orientation places the real aircraft\n    // just below the screen edge and the actual route tangent straight ahead.\n    // Zoom is handled exclusively through camera.fov.\n    camera.position.set(0, 0, AHEAD_CAMERA_Z)\n    camera.fov = aheadFov\n    camera.up.set(0, 1, 0)\n    camera.lookAt(0, 0, 0)\n    camera.updateProjectionMatrix()`
+    const opticalFocusBlock = `    // Keep the optical axis fixed. Earth orientation places the real aircraft\n    // just below the screen edge and the actual route tangent straight ahead.\n    // Zoom is handled exclusively through camera.fov.\n    camera.position.set(0, -AHEAD_CAMERA_BACK, AHEAD_CAMERA_Z)\n    camera.fov = aheadFov\n    camera.up.set(0, 0, 1)\n    camera.lookAt(0, AHEAD_LOOK_AHEAD, AHEAD_LOOK_HEIGHT)\n    camera.updateProjectionMatrix()`
     if (!transformed.includes(oldFocusBlock)) throw new Error('Could not locate transformed Ahead focus block')
     transformed = transformed.replace(oldFocusBlock, opticalFocusBlock)
 
@@ -60,7 +60,7 @@ const opticalAheadView = () => ({
 
     // vite.config.js has already added orientAhead() to this handler.
     const oldSetZoom = `  const setZoom = value => {\n    if (camera) camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)\n    if (globeCameraMode === 'ahead') orientAhead()\n    markInteraction()\n  }`
-    const opticalSetZoom = `  const setZoom = value => {\n    if (camera) {\n      if (globeCameraMode === 'ahead') {\n        // Existing pinch/wheel callers express zoom as a requested camera-Z.\n        // Convert that relative change into FOV instead, leaving camera-Z fixed.\n        const ratio = THREE.MathUtils.clamp(Number(value) / AHEAD_CAMERA_Z, 0.62, 1.62)\n        aheadFov = THREE.MathUtils.clamp(aheadFov * ratio, AHEAD_MIN_FOV, AHEAD_MAX_FOV)\n        camera.position.set(0, 0, AHEAD_CAMERA_Z)\n        camera.fov = aheadFov\n        camera.up.set(0, 1, 0)\n        camera.lookAt(0, 0, 0)\n        camera.updateProjectionMatrix()\n        orientAhead()\n      } else {\n        camera.fov = 48\n        camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)\n        camera.updateProjectionMatrix()\n      }\n    }\n    markInteraction()\n  }`
+    const opticalSetZoom = `  const setZoom = value => {\n    if (camera) {\n      if (globeCameraMode === 'ahead') {\n        // Existing pinch/wheel callers express zoom as a requested camera-Z.\n        // Convert that relative change into FOV instead, leaving camera-Z fixed.\n        const ratio = THREE.MathUtils.clamp(Number(value) / AHEAD_CAMERA_Z, 0.62, 1.62)\n        aheadFov = THREE.MathUtils.clamp(aheadFov * ratio, AHEAD_MIN_FOV, AHEAD_MAX_FOV)\n        camera.position.set(0, -AHEAD_CAMERA_BACK, AHEAD_CAMERA_Z)\n        camera.fov = aheadFov\n        camera.up.set(0, 0, 1)\n        camera.lookAt(0, AHEAD_LOOK_AHEAD, AHEAD_LOOK_HEIGHT)\n        camera.updateProjectionMatrix()\n        orientAhead()\n      } else {\n        camera.fov = 48\n        camera.position.z = THREE.MathUtils.clamp(value, MIN_CAMERA_Z, MAX_CAMERA_Z)\n        camera.updateProjectionMatrix()\n      }\n    }\n    markInteraction()\n  }`
     if (!transformed.includes(oldSetZoom)) throw new Error('Could not locate transformed globe zoom handler')
     transformed = transformed.replace(oldSetZoom, opticalSetZoom)
 
@@ -74,7 +74,7 @@ const opticalAheadView = () => ({
 
     // vite.config.js has already changed the Ahead entry threshold to 4.2/3.9.
     const oldAheadEntry = `  if (requested === 'ahead') {\n    if (camera && camera.position.z > 4.2) camera.position.z = 3.9\n    orientAhead()\n  }`
-    const opticalAheadEntry = `  if (requested === 'ahead') {\n    if (camera) {\n      camera.position.set(0, 0, AHEAD_CAMERA_Z)\n      camera.fov = aheadFov\n      camera.up.set(0, 1, 0)\n      camera.lookAt(0, 0, 0)\n      camera.updateProjectionMatrix()\n    }\n    orientAhead()\n  }`
+    const opticalAheadEntry = `  if (requested === 'ahead') {\n    if (camera) {\n      camera.position.set(0, -AHEAD_CAMERA_BACK, AHEAD_CAMERA_Z)\n      camera.fov = aheadFov\n      camera.up.set(0, 0, 1)\n      camera.lookAt(0, AHEAD_LOOK_AHEAD, AHEAD_LOOK_HEIGHT)\n      camera.updateProjectionMatrix()\n    }\n    orientAhead()\n  }`
     if (!transformed.includes(oldAheadEntry)) throw new Error('Could not locate transformed Ahead mode entry block')
     transformed = transformed.replace(oldAheadEntry, opticalAheadEntry)
 
