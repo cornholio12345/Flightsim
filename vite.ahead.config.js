@@ -15,10 +15,10 @@ const closeAheadComposition = () => ({
     camera.up.set(0, 1, 0)
     camera.lookAt(noseFocus)`
 
-    const newBlock = `    // Ahead must look at the route in FRONT of the aircraft, not merely shift
-    // the camera around the aircraft. At close zoom pick a real route sample
-    // ahead of the current position and keep that piece of Earth in the centre.
-    const desiredAheadAngle = THREE.MathUtils.lerp(0.012, 0.075, easedZoomIn)
+    const newBlock = `    // Ahead is a forward-looking view, not an aircraft-centred view. Keep a
+    // substantial piece of the actual route in the middle of the screen. At
+    // maximum zoom the visual target is about 20 degrees ahead of the aircraft.
+    const desiredAheadAngle = THREE.MathUtils.lerp(0.24, 0.36, easedZoomIn)
     let routeFocus = null
 
     if (routeSamples.length > 1) {
@@ -55,17 +55,30 @@ const closeAheadComposition = () => ({
       routeFocus = surfaceFocusNormal.multiplyScalar(ROUTE_RADIUS)
     }
 
-    // Lens composition: the route ahead owns the centre of the view. The
-    // aircraft stays low as a reference, with progressively more offset only
-    // when zooming close. This preserves map detail instead of showing sky.
-    const cameraLift = THREE.MathUtils.lerp(0.08, 0.25, easedZoomIn)
+    // Keep the camera itself neutral. Moving the LOOK-AT point far ahead rotates
+    // the whole composition forward while keeping Earth dominant in the frame.
     camera.position.x = 0
-    camera.position.y = cameraLift
+    camera.position.y = 0.08
     camera.up.set(0, 1, 0)
     camera.lookAt(routeFocus)`
 
     if (!code.includes(oldBlock)) throw new Error('Could not locate final Ahead zoom composition block')
-    return { code: code.replace(oldBlock, newBlock), map: null }
+    let transformed = code.replace(oldBlock, newBlock)
+
+    // The full aircraft sprite is deliberately hidden in Ahead mode. A clipped
+    // nose marker is drawn by CSS at the lower screen edge, so wings can never
+    // cover the map we are trying to inspect.
+    const visibleLine = `  aircraft.visible = true`
+    const aheadVisibleLine = `  aircraft.visible = globeCameraMode !== 'ahead'`
+    if (!transformed.includes(visibleLine)) throw new Error('Could not locate aircraft visibility update')
+    transformed = transformed.replace(visibleLine, aheadVisibleLine)
+
+    const modeState = `  globeCameraMode = requested\n  followAircraft = requested === 'follow'`
+    const modeStateWithVisibility = `  globeCameraMode = requested\n  followAircraft = requested === 'follow'\n  if (aircraft) aircraft.visible = requested !== 'ahead'`
+    if (!transformed.includes(modeState)) throw new Error('Could not locate globe camera mode state')
+    transformed = transformed.replace(modeState, modeStateWithVisibility)
+
+    return { code: transformed, map: null }
   }
 })
 
