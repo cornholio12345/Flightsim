@@ -30,11 +30,10 @@
   opacity: 0;
   transition: opacity 120ms linear;
   pointer-events: none;
-  -webkit-user-drag: none;
 }
 
 .dom-map-tile.loaded { opacity: 1; }
-.dom-map-tile.failed { display: none; }
+.dom-map-tile.failed { opacity: .16; }
 
 .dom-map-overlay {
   z-index: 3;
@@ -147,4 +146,128 @@
   background: rgba(5, 19, 28, .76);
   font-size: 8px;
   pointer-events: none;
+}
+
+.detail-offline-card {
+  position: absolute;
+  z-index: 30;
+  left: 12px;
+  bottom: 12px;
+  width: min(330px, calc(100% - 70px));
+  padding: 10px;
+  border-radius: 12px;
+  color: #e7f1f4;
+  background: rgba(4, 16, 23, .92);
+  border: 1px solid rgba(255, 255, 255, .13);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(10px);
+}
+
+.detail-offline-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detail-offline-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.detail-offline-title {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.detail-offline-meta,
+.detail-offline-hint,
+.detail-offline-progress-label {
+  color: #91a8b3;
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.detail-offline-badge {
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  border-radius: 999px;
+  color: #79dfb4;
+  background: rgba(65, 180, 135, .14);
+  border: 1px solid rgba(91, 214, 164, .22);
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: .06em;
+}
+
+.detail-offline-progress-wrap {
+  margin-top: 8px;
+  gap: 4px;
+}
+
+.detail-offline-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .1);
+}
+
+.detail-offline-progress-bar {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #67d9a9;
+  transition: width 120ms linear;
+}
+
+.detail-offline-hint {
+  margin-top: 7px;
+}
+
+.detail-offline-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.detail-offline-download,
+.detail-offline-secondary {
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 0;
+  padding: 6px 9px;
+  font: 800 9px/1 system-ui, sans-serif;
+}
+
+.detail-offline-download {
+  color: #062018;
+  background: #70dcae;
+}
+
+.detail-offline-secondary {
+  color: #bfd0d7;
+  background: rgba(255, 255, 255, .09);
+}
+
+.detail-offline-download:disabled,
+.detail-offline-secondary:disabled {
+  opacity: .45;
+}
+
+@media (max-width: 520px) {
+  .detail-offline-card {
+    left: 9px;
+    bottom: 9px;
+    width: min(300px, calc(100% - 58px));
+    padding: 9px;
+  }
+
+  .detail-offline-meta,
+  .detail-offline-hint,
+  .detail-offline-progress-label {
+    font-size: 8px;
+  }
 }

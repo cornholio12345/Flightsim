@@ -1,10 +1,12 @@
 import '../detailMapDom.css'
+import { getOfflineMapTile, OFFLINE_MAX_ZOOM, VERSATILES_TILE_URL } from './offlineMapStore'
+import { renderVersaTile } from './vectorTileRenderer'
 
 const TILE_SIZE = 256
 const MIN_ZOOM = 2
-const MAX_ZOOM = 18
-const TILE_URL = (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`
+const MAX_ZOOM = 14
 const SVG_NS = 'http://www.w3.org/2000/svg'
+const MEMORY_TILE_LIMIT = 140
 
 let container
 let tilePane
@@ -23,12 +25,15 @@ let tileErrors = 0
 let center = { lat: 50.11, lon: 8.68 }
 let zoom = 3
 let tiles = new Map()
+let memoryTileData = new Map()
+let tileGeneration = 0
 let routeSamples = []
 let routeLabels = {}
 let currentProgress = 0
 let aircraftState = null
 let alternativeRoutes = []
 let selectedAlternativeId = null
+let activeTripId = null
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const toRad = value => Number(value) * Math.PI / 180
@@ -147,6 +152,63 @@ const notifyTerminalError = message => {
   onErrorCallback?.(new Error(message))
 }
 
+const rememberTile = (key, data) => {
+  memoryTileData.set(key, data)
+  if (memoryTileData.size <= MEMORY_TILE_LIMIT) return
+  const oldest = memoryTileData.keys().next().value
+  if (oldest) memoryTileData.delete(oldest)
+}
+
+const loadTileData = async (z, x, y) => {
+  const sourceKey = `${z}/${x}/${y}`
+  if (activeTripId) {
+    const stored = await getOfflineMapTile(activeTripId, z, x, y)
+    if (stored) return { data: stored, offline: true }
+  }
+  const remembered = memoryTileData.get(sourceKey)
+  if (remembered) return { data: remembered, offline: false }
+  if (!navigator.onLine) {
+    const error = new Error('This area or zoom level is not in the downloaded offline map.')
+    error.code = 'OFFLINE_TILE_MISS'
+    throw error
+  }
+  const response = await fetch(VERSATILES_TILE_URL(z, x, y), {
+    cache: 'default',
+    headers: { Accept: 'application/vnd.mapbox-vector-tile, application/x-protobuf, */*' }
+  })
+  if (!response.ok) throw new Error(`VersaTiles tile request failed with HTTP ${response.status}.`)
+  const data = await response.arrayBuffer()
+  rememberTile(sourceKey, data)
+  return { data, offline: false }
+}
+
+const paintTile = async (canvas, z, x, y, generation, key) => {
+  try {
+    const result = await loadTileData(z, x, y)
+    if (generation !== tileGeneration || !canvas.isConnected || canvas.dataset.tileKey !== key) return
+    renderVersaTile(canvas, result.data, { zoom: z })
+    canvas.classList.add('loaded')
+    canvas.classList.toggle('offline', result.offline)
+    anyTileLoaded = true
+    notifyReady()
+  } catch (error) {
+    if (generation !== tileGeneration || !canvas.isConnected || canvas.dataset.tileKey !== key) return
+    canvas.classList.add('failed')
+    tileErrors += 1
+    if (!anyTileLoaded && tileErrors >= 6) {
+      notifyTerminalError(error?.code === 'OFFLINE_TILE_MISS'
+        ? 'Offline detail map is not downloaded for this route or zoom level'
+        : (error?.message || 'Map tile host is not reachable from this device'))
+    }
+  }
+}
+
+const clearVisibleTiles = () => {
+  tileGeneration += 1
+  tiles.forEach(tile => tile.remove())
+  tiles.clear()
+}
+
 const renderTiles = () => {
   if (!container || !tilePane) return
   const { width, height } = dimensions()
@@ -157,44 +219,37 @@ const renderTiles = () => {
   const minTileY = Math.max(0, Math.floor((centerPoint.y - height / 2) / TILE_SIZE) - 1)
   const maxTileY = Math.min(n - 1, Math.floor((centerPoint.y + height / 2) / TILE_SIZE) + 1)
   const required = new Set()
+  const generation = tileGeneration
 
   for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
     const wrappedX = ((tileX % n) + n) % n
     for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
       const key = `${zoom}/${tileX}/${tileY}`
       required.add(key)
-      let image = tiles.get(key)
-      if (!image) {
-        image = document.createElement('img')
-        image.className = 'dom-map-tile'
-        image.alt = ''
-        image.draggable = false
-        image.decoding = 'async'
-        image.loading = 'eager'
-        image.addEventListener('load', () => {
-          anyTileLoaded = true
-          image.classList.add('loaded')
-          notifyReady()
-        })
-        image.addEventListener('error', () => {
-          tileErrors += 1
-          image.classList.add('failed')
-          if (!anyTileLoaded && tileErrors >= 6) {
-            notifyTerminalError('Map tile host is not reachable from this device')
-          }
-        })
-        image.src = TILE_URL(zoom, wrappedX, tileY)
-        tilePane.appendChild(image)
-        tiles.set(key, image)
+      let canvas = tiles.get(key)
+      if (!canvas) {
+        canvas = document.createElement('canvas')
+        canvas.className = 'dom-map-tile'
+        canvas.width = TILE_SIZE
+        canvas.height = TILE_SIZE
+        canvas.dataset.tileKey = key
+        const placeholder = canvas.getContext('2d')
+        if (placeholder) {
+          placeholder.fillStyle = '#203a36'
+          placeholder.fillRect(0, 0, TILE_SIZE, TILE_SIZE)
+        }
+        tilePane.appendChild(canvas)
+        tiles.set(key, canvas)
+        paintTile(canvas, zoom, wrappedX, tileY, generation, key)
       }
-      image.style.left = `${tileX * TILE_SIZE - centerPoint.x + width / 2}px`
-      image.style.top = `${tileY * TILE_SIZE - centerPoint.y + height / 2}px`
+      canvas.style.left = `${tileX * TILE_SIZE - centerPoint.x + width / 2}px`
+      canvas.style.top = `${tileY * TILE_SIZE - centerPoint.y + height / 2}px`
     }
   }
 
-  tiles.forEach((image, key) => {
+  tiles.forEach((tile, key) => {
     if (required.has(key)) return
-    image.remove()
+    tile.remove()
     tiles.delete(key)
   })
 }
@@ -318,6 +373,7 @@ const fitRoute = samples => {
     lon: circularMeanLon(samples)
   }
 
+  let selectedZoom = MIN_ZOOM
   for (let candidate = 8; candidate >= MIN_ZOOM; candidate -= 1) {
     const candidateCenter = project(center.lat, center.lon, candidate)
     const points = samples.map(item => screenPoint(item.coord, candidate, candidateCenter))
@@ -326,17 +382,22 @@ const fitRoute = samples => {
     const spanX = Math.max(...xs) - Math.min(...xs)
     const spanY = Math.max(...ys) - Math.min(...ys)
     if (spanX <= Math.max(80, width - 100) && spanY <= Math.max(80, height - 100)) {
-      zoom = candidate
+      selectedZoom = candidate
       break
     }
   }
+  zoom = selectedZoom
+  clearVisibleTiles()
   render()
 }
 
+const currentMaxZoom = () => navigator.onLine ? MAX_ZOOM : OFFLINE_MAX_ZOOM
+
 const changeZoom = delta => {
-  const next = clamp(zoom + delta, MIN_ZOOM, MAX_ZOOM)
+  const next = clamp(zoom + delta, MIN_ZOOM, currentMaxZoom())
   if (next === zoom) return
   zoom = next
+  clearVisibleTiles()
   render()
 }
 
@@ -346,7 +407,7 @@ const installInteractions = () => {
   let pinchStartDistance = null
   let pinchStartZoom = zoom
 
-  const distance = () => {
+  const pointerDistance = () => {
     if (pointers.size < 2) return null
     const [a, b] = [...pointers.values()]
     return Math.hypot(a.x - b.x, a.y - b.y)
@@ -360,7 +421,7 @@ const installInteractions = () => {
       dragStart = { x: event.clientX, y: event.clientY, centerX: world.x, centerY: world.y }
     } else {
       dragStart = null
-      pinchStartDistance = distance()
+      pinchStartDistance = pointerDistance()
       pinchStartZoom = zoom
     }
   }
@@ -369,11 +430,12 @@ const installInteractions = () => {
     if (!pointers.has(event.pointerId)) return
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
     if (pointers.size >= 2) {
-      const currentDistance = distance()
-      if (!currentDistance || !pinchStartDistance) return
-      const target = clamp(Math.round(pinchStartZoom + Math.log2(currentDistance / pinchStartDistance)), MIN_ZOOM, MAX_ZOOM)
+      const distance = pointerDistance()
+      if (!distance || !pinchStartDistance) return
+      const target = clamp(Math.round(pinchStartZoom + Math.log2(distance / pinchStartDistance)), MIN_ZOOM, currentMaxZoom())
       if (target !== zoom) {
         zoom = target
+        clearVisibleTiles()
         render()
       }
       return
@@ -387,13 +449,13 @@ const installInteractions = () => {
 
   const onPointerEnd = event => {
     pointers.delete(event.pointerId)
-    if (pointers.size === 1) {
+    if (!pointers.size) {
+      dragStart = null
+      pinchStartDistance = null
+    } else if (pointers.size === 1) {
       const [remaining] = pointers.values()
       const world = centerWorld()
       dragStart = { x: remaining.x, y: remaining.y, centerX: world.x, centerY: world.y }
-    } else if (!pointers.size) {
-      dragStart = null
-      pinchStartDistance = null
     }
   }
 
@@ -418,37 +480,7 @@ const installInteractions = () => {
   }
 }
 
-export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
-  if (container) return { type: 'dom-raster' }
-  container = document.getElementById(containerId)
-  if (!container) {
-    onError?.(new Error('Detail map container not found'))
-    return null
-  }
-
-  onReadyCallback = onReady
-  onErrorCallback = onError
-  readyNotified = false
-  anyTileLoaded = false
-  terminalTileError = false
-  tileErrors = 0
-
-  container.innerHTML = ''
-  container.classList.add('dom-detail-map')
-
-  tilePane = document.createElement('div')
-  tilePane.className = 'dom-map-tiles'
-  container.appendChild(tilePane)
-
-  overlaySvg = svgElement('svg', { class: 'dom-map-overlay', 'aria-hidden': 'true' })
-  container.appendChild(overlaySvg)
-
-  planeElement = document.createElement('div')
-  planeElement.className = 'dom-map-plane'
-  planeElement.textContent = '✈'
-  planeElement.style.display = 'none'
-  container.appendChild(planeElement)
-
+const createControls = () => {
   const controls = document.createElement('div')
   controls.className = 'dom-map-zoom-controls'
   const plus = document.createElement('button')
@@ -463,30 +495,72 @@ export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
   minus.addEventListener('click', () => changeZoom(-1))
   controls.append(plus, minus)
   container.appendChild(controls)
+}
 
+export const initializeDetailMap = (containerId, { onReady, onError } = {}) => {
+  if (container) return { container }
+  container = document.getElementById(containerId)
+  if (!container) {
+    onError?.(new Error('Detail map container not found.'))
+    return null
+  }
+
+  onReadyCallback = onReady
+  onErrorCallback = onError
+  readyNotified = false
+  anyTileLoaded = false
+  terminalTileError = false
+  tileErrors = 0
+  container.classList.add('dom-detail-map')
+  container.innerHTML = ''
+
+  tilePane = document.createElement('div')
+  tilePane.className = 'dom-map-tiles'
+  overlaySvg = svgElement('svg', { class: 'dom-map-overlay', 'aria-hidden': 'true' })
+  planeElement = document.createElement('div')
+  planeElement.className = 'dom-map-plane'
+  planeElement.textContent = '✈'
+  planeElement.style.display = 'none'
   attributionElement = document.createElement('div')
   attributionElement.className = 'dom-map-attribution'
-  attributionElement.innerHTML = '© OpenStreetMap contributors'
-  container.appendChild(attributionElement)
+  attributionElement.textContent = '© OpenStreetMap contributors · tiles VersaTiles'
 
+  container.append(tilePane, overlaySvg, planeElement, attributionElement)
+  createControls()
   interactionCleanup = installInteractions()
+
   resizeObserver = new ResizeObserver(() => render())
   resizeObserver.observe(container)
-
   tileWatchdog = window.setTimeout(() => {
-    if (!anyTileLoaded) notifyTerminalError('No OpenStreetMap tile loaded after 8 seconds')
+    if (!anyTileLoaded) notifyTerminalError(navigator.onLine
+      ? 'VersaTiles did not return a map tile within 8 seconds'
+      : 'No downloaded offline map is available for this view')
   }, 8000)
 
   render()
-  return { type: 'dom-raster' }
+  return { container }
+}
+
+export const setDetailMapTrip = tripId => {
+  const next = tripId ? String(tripId) : null
+  if (next === activeTripId) return
+  activeTripId = next
+  clearVisibleTiles()
+  if (container) render()
+}
+
+export const refreshDetailMapTiles = () => {
+  clearVisibleTiles()
+  tileErrors = 0
+  terminalTileError = false
+  if (container) render()
 }
 
 export const setDetailRoute = (nodes, labels = {}) => {
   routeSamples = samplesForNodes(nodes)
   routeLabels = labels || {}
   currentProgress = 0
-  alternativeRoutes = []
-  selectedAlternativeId = null
+  aircraftState = null
   if (routeSamples.length) fitRoute(routeSamples)
   else renderOverlay()
 }
@@ -496,9 +570,7 @@ export const setDetailRouteAlternatives = (plans, selectedId = null) => {
   alternativeRoutes = (plans || [])
     .filter(plan => plan?.previewNodes?.length >= 2)
     .map(plan => ({ id: String(plan.id), samples: samplesForNodes(plan.previewNodes) }))
-  const combined = alternativeRoutes.flatMap(route => route.samples)
-  if (combined.length) fitRoute(combined)
-  else renderOverlay()
+  renderOverlay()
 }
 
 export const highlightDetailRouteAlternative = planId => {
@@ -517,19 +589,20 @@ export const updateDetailProgress = (progress, aircraftPosition = null) => {
 export const updateDetailAircraft = (lat, lon, bearing = 0, follow = false) => {
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return
   aircraftState = { lat: Number(lat), lon: Number(lon), bearing: Number(bearing || 0) }
-  if (follow) center = { lat: aircraftState.lat, lon: aircraftState.lon }
+  if (follow) center = { lat: Number(lat), lon: Number(lon) }
   render()
 }
 
 export const recenterDetailAircraft = (lat, lon) => {
-  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return false
+  if (!container || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) return false
   center = { lat: Number(lat), lon: Number(lon) }
-  zoom = Math.max(zoom, 5)
+  zoom = Math.min(currentMaxZoom(), Math.max(zoom, 7))
+  clearVisibleTiles()
   render()
   return true
 }
 
-export const resizeDetailMap = () => render()
+export const resizeDetailMap = () => { if (container) render() }
 
 export const destroyDetailMap = () => {
   clearTimeout(tileWatchdog)
@@ -537,10 +610,16 @@ export const destroyDetailMap = () => {
   resizeObserver = null
   interactionCleanup?.()
   interactionCleanup = null
-  tiles.forEach(image => image.remove())
-  tiles = new Map()
+  clearVisibleTiles()
+  memoryTileData.clear()
+  routeSamples = []
+  routeLabels = {}
+  alternativeRoutes = []
+  selectedAlternativeId = null
+  aircraftState = null
+  currentProgress = 0
+  activeTripId = null
   try { container?.replaceChildren?.() } catch (_) { /* no-op */ }
-  container?.classList?.remove?.('dom-detail-map')
   container = null
   tilePane = null
   overlaySvg = null
@@ -548,12 +627,6 @@ export const destroyDetailMap = () => {
   attributionElement = null
   onReadyCallback = null
   onErrorCallback = null
-  routeSamples = []
-  routeLabels = {}
-  currentProgress = 0
-  aircraftState = null
-  alternativeRoutes = []
-  selectedAlternativeId = null
   readyNotified = false
   anyTileLoaded = false
   terminalTileError = false

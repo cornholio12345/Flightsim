@@ -2,6 +2,7 @@ import Dexie from 'dexie'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { prepareRoute } from '../utils/routeUtils'
+import { deleteOfflineMapPack } from '../utils/offlineMapStore'
 
 const db = new Dexie('FlightTrackerDB')
 db.version(2).stores({
@@ -128,6 +129,7 @@ export const useFlightStore = defineStore('flight', () => {
 
   const deleteTrip = async id => {
     await db.trips.delete(id)
+    try { await deleteOfflineMapPack(id) } catch (_) { /* trip deletion should still succeed */ }
     await refreshTrips()
   }
 
