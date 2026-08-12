@@ -34,24 +34,27 @@ try {
   const headers = parseCsvRow(lines.shift() || '')
   const column = name => headers.indexOf(name)
   const identIndex = column('ident')
+  const gpsIndex = column('gps_code')
   const iataIndex = column('iata_code')
   const typeIndex = column('type')
   const scheduledIndex = column('scheduled_service')
-  if ([identIndex, iataIndex, typeIndex].some(index => index < 0)) throw new Error('OurAirports columns changed')
+  if ([identIndex, gpsIndex, iataIndex, typeIndex].some(index => index < 0)) throw new Error('OurAirports columns changed')
 
   const best = new Map()
   for (const line of lines) {
     const cells = parseCsvRow(line)
     const iata = String(cells[iataIndex] || '').trim().toUpperCase()
+    const gpsCode = String(cells[gpsIndex] || '').trim().toUpperCase()
     const ident = String(cells[identIndex] || '').trim().toUpperCase()
-    if (!/^[A-Z]{3}$/.test(iata) || !/^[A-Z0-9]{4}$/.test(ident)) continue
+    const icao = /^[A-Z0-9]{4}$/.test(gpsCode) ? gpsCode : ident
+    if (!/^[A-Z]{3}$/.test(iata) || !/^[A-Z0-9]{4}$/.test(icao)) continue
     const rank = typeRank(cells[typeIndex]) - (cells[scheduledIndex] === 'yes' ? 0.5 : 0)
     const existing = best.get(iata)
-    if (!existing || rank < existing.rank) best.set(iata, { ident, rank })
+    if (!existing || rank < existing.rank) best.set(iata, { icao, rank })
   }
 
   const airports = [...best.entries()]
-    .map(([iata, airport]) => [iata, airport.ident])
+    .map(([iata, airport]) => [iata, airport.icao])
     .sort((a, b) => a[0].localeCompare(b[0]))
   if (airports.length < 3000) throw new Error(`OurAirports returned only ${airports.length} usable IATA airports`)
 
